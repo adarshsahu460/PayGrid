@@ -1,0 +1,97 @@
+services:
+  zookeeper:
+    image: bitnami/zookeeper:3.8
+    ports:
+      - "2181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+  kafka:
+    image: bitnami/kafka:3.4
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+    depends_on:
+      - zookeeper
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: paygrid
+      POSTGRES_PASSWORD: paygrid
+      POSTGRES_DB: paygrid
+    ports:
+      - "5432:5432"
+  mongo:
+    image: mongo:4.4
+    ports:
+      - "27017:27017"
+  redis:
+    image: redis:6.2
+    ports:
+      - "6379:6379"
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - payment-service
+  payment-service:
+    build:
+      context: .
+      dockerfile: services/payment-service/Dockerfile
+    ports:
+      - "3001:3001"
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+  psp-service:
+    build:
+      context: .
+      dockerfile: services/psp-service/Dockerfile
+    ports:
+      - "3002:3002"
+    depends_on:
+      - kafka
+      - payment-service
+  card-network:
+    build:
+      context: .
+      dockerfile: services/card-network/Dockerfile
+    ports:
+      - "3003:3003"
+    depends_on:
+      - kafka
+  issuing-bank:
+    build:
+      context: .
+      dockerfile: services/issuing-bank/Dockerfile
+    ports:
+      - "3004:3004"
+    depends_on:
+      - kafka
+      - mongo
+  acquiring-bank:
+    build:
+      context: .
+      dockerfile: services/acquiring-bank/Dockerfile
+    ports:
+      - "3005:3005"
+    depends_on:
+      - kafka
+      - mongo
+  3ds-service:
+    build:
+      context: .
+      dockerfile: services/3ds-service/Dockerfile
+    ports:  
+      - "3008:3008"
+    depends_on:
+      - redis
+networks:
+  default:
+    name: paygrid-net 
