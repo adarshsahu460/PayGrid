@@ -15,6 +15,18 @@ services:
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
     depends_on:
       - zookeeper
+  kafka-init-topics:
+    image: bitnami/kafka:3.4
+    depends_on:
+      - kafka
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "sleep 10 && \
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payment-requests-dead-letter --replication-factor 1 --partitions 1 --config retention.ms=604800000 && \
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payment-responses-dead-letter --replication-factor 1 --partitions 1 --config retention.ms=604800000 && \
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payments-dead-letter --replication-factor 1 --partitions 1 --config retention.ms=604800000"
+    networks:
+      - default
   postgres:
     image: postgres:13
     environment:
@@ -23,6 +35,8 @@ services:
       POSTGRES_DB: paygrid
     ports:
       - "5432:5432"
+    volumes:
+      - ./services/payment-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql
   mongo:
     image: mongo:4.4
     ports:
@@ -92,6 +106,94 @@ services:
       - "3008:3008"
     depends_on:
       - redis
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    ports:
+      - "9308:9308"
+    environment:
+      - KAFKA_SERVER=kafka:9092
+    depends_on:
+      - kafka
+    networks:
+      - default
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - "9090:9090"
+    depends_on:
+      - kafka-exporter
+    networks:
+      - default
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3050:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+    depends_on:
+      - prometheus
+    networks:
+      - default
+  ledger-service:
+    build:
+      context: .
+      dockerfile: services/ledger-service/Dockerfile
+    ports:
+      - "3010:3010"
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      - POSTGRES_USER=paygrid
+      - POSTGRES_PASSWORD=paygrid
+      - POSTGRES_DB=paygrid
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+  wallet-service:
+    build:
+      context: .
+      dockerfile: services/wallet-service/Dockerfile
+    ports:
+      - "3011:3011"
+    depends_on:
+      - postgres
+      - kafka
+  pci-service:
+    build:
+      context: .
+      dockerfile: services/pci-service/Dockerfile
+    ports:
+      - "3012:3012"
+  upiswitch-service:
+    build:
+      context: .
+      dockerfile: services/upiswitch-service/Dockerfile
+    ports:
+      - "3013:3013"
+    depends_on:
+      - kafka
+  netbanking-service:
+    build:
+      context: .
+      dockerfile: services/netbanking-service/Dockerfile
+    ports:
+      - "3014:3014"
+    depends_on:
+      - kafka
+  settlement-batch-service:
+    build:
+      context: .
+      dockerfile: services/settlement-batch-service/Dockerfile
+    ports:
+      - "3015:3015"
+    depends_on:
+      - kafka
+      - ledger-service
 networks:
   default:
     name: paygrid-net 

@@ -10,8 +10,8 @@ yarn-debug.log*
 yarn-error.log*
 
 # Environment files
-.env
-.env.*
+# .env
+# .env.*
 
 # Build output
 dist/
@@ -20,8 +20,8 @@ coverage/
 
 # Docker
 *.local
-Dockerfile*
-.dockerignore
+# Dockerfile*
+# .dockerignore
 
 # OS
 .DS_Store

@@ -16,4 +16,19 @@ export interface PaymentAuthorizedEvent {
   reason?: string;
   timestamp: string;
 }
+
+export interface RefundInitiatedEvent {
+  transactionId: string;
+  amount: number;
+  reason: string;
+  timestamp: string;
+}
+
+export interface RefundCompletedEvent {
+  transactionId: string;
+  status: 'REFUNDED' | 'REFUND_FAILED';
+  reason?: string;
+  timestamp: string;
+}
+
 // Add more event schemas as needed 

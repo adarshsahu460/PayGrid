@@ -19,7 +19,7 @@ export const PaymentRequestSchema = z.object({
 export const PaymentResponseSchema = z.object({
   requestId: z.string(),
   transactionId: z.string(),
-  status: z.enum(['APPROVED', 'DECLINED', 'PROCESSING', 'FAILED']),
+  status: z.enum(['APPROVED', 'DECLINED', 'PROCESSING', 'FAILED', 'AUTHORIZED', 'SETTLED']),
   message: z.string(),
   timestamp: z.string()
 });

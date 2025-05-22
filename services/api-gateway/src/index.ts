@@ -2,10 +2,14 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
+import promClient from 'prom-client';
 dotenv.config();
 
 const app = express();
 app.use(express.json());
+
+const collectDefaultMetrics = promClient.collectDefaultMetrics;
+collectDefaultMetrics();
 
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok' });
@@ -32,6 +36,11 @@ app.post('/payments', async (req, res) => {
   } catch (err: any) {
     res.status(err.response?.status || 500).json({ error: err.message });
   }
+});
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', promClient.register.contentType);
+  res.end(await promClient.register.metrics());
 });
 
 const PORT = process.env.PORT || 3000;

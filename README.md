@@ -12,7 +12,7 @@ The system is composed of modular Node.js microservices, each representing a rea
 - **Card Network**: Simulates a Visa/Mastercard-like network, routes transactions, and enforces interchange rules.
 - **Issuing Bank**: Simulates the customer's bank, validates cards, and checks balances.
 - **Acquiring Bank**: Simulates the merchant's bank, handles settlements.
-- **Ledger Service**: Maintains a distributed ledger with Raft consensus for all debits/credits.
+- **Ledger Service**: Maintains a distributed ledger with double-entry records for all debits/credits, listens to payment, refund, and settlement events, and exposes health and metrics endpoints on port 3010.
 - **Wallet Service**: Manages user and merchant e-wallet balances.
 - **3D Secure Service**: Simulates OTP-based authentication for card-not-present transactions.
 - **PCI DSS Module**: Ensures secure tokenization and transmission of cardholder data.

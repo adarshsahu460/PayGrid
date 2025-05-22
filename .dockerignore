@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+.git
+dist
+*.log
+npm-debug.log
+docker-compose.yml
+Dockerfile
+.DS_Store
+*.swp
+*.swo
+.idea
+.vscode
+coverage
+.env 
