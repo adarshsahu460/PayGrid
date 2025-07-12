@@ -20,4 +20,4 @@ RUN ls -l /app/services/acquiring-bank/dist || echo "dist folder missing"
 # Set production environment only after build (optional)
 # ENV NODE_ENV=production
 
-CMD ["node", "dist/index.js"] 
+CMD ["node", "dist/index.js"]

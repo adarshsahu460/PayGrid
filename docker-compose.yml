@@ -37,10 +37,6 @@ services:
       - "5432:5432"
     volumes:
       - ./services/payment-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql
-  mongo:
-    image: mongo:4.4
-    ports:
-      - "27017:27017"
   redis:
     image: redis:6.2
     ports:
@@ -50,7 +46,7 @@ services:
       context: .
       dockerfile: services/api-gateway/Dockerfile
     ports:
-      - "3000:3000"
+      - "3000:3000" 
     depends_on:
       - payment-service
   payment-service:
@@ -88,7 +84,6 @@ services:
       - "3004:3004"
     depends_on:
       - kafka
-      - mongo
   acquiring-bank:
     build:
       context: .
@@ -97,7 +92,6 @@ services:
       - "3005:3005"
     depends_on:
       - kafka
-      - mongo
   3ds-service:
     build:
       context: .
@@ -106,39 +100,6 @@ services:
       - "3008:3008"
     depends_on:
       - redis
-  kafka-exporter:
-    image: danielqsj/kafka-exporter:latest
-    ports:
-      - "9308:9308"
-    environment:
-      - KAFKA_SERVER=kafka:9092
-    depends_on:
-      - kafka
-    networks:
-      - default
-  prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-    ports:
-      - "9090:9090"
-    depends_on:
-      - kafka-exporter
-    networks:
-      - default
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3050:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_SECURITY_ADMIN_USER=admin
-    depends_on:
-      - prometheus
-    networks:
-      - default
   ledger-service:
     build:
       context: .

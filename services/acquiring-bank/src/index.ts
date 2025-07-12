@@ -48,9 +48,7 @@ app.get('/metrics', async (req, res) => {
 async function startKafka() {
   await producer.connect();
   await consumer.connect();
-  
   await consumer.subscribe({ topic: 'payment-requests', fromBeginning: true });
-  
   await consumer.run({
     eachMessage: async ({ message }) => {
       if (!message.value) return;
@@ -67,13 +65,18 @@ async function startKafka() {
           message: isApproved ? 'Transaction settled by acquiring bank' : 'Transaction declined by acquiring bank',
           timestamp: new Date().toISOString()
         };
-        // Send response to payment service
-        await producer.send({
-          topic: 'payment-responses',
+        // Publish to next stage
+        await producer.send({ 
+          topic: 'acquiring-bank-responses',
           messages: [
             {
               key: paymentRequest.requestId,
-              value: JSON.stringify(response)
+              value: JSON.stringify({
+                ...paymentRequest,
+                status: 'PROCESSED_BY_ACQUIRING',
+                message: 'Processed by acquiring bank',
+                timestamp: new Date().toISOString()
+              })
             }
           ]
         });
@@ -89,8 +92,6 @@ async function startKafka() {
       }
     }
   });
-
-  // Retry consumer for dead-letter topic
   const retryConsumer = kafka.consumer({ groupId: 'acquiring-bank-retry-group' });
   await retryConsumer.connect();
   await retryConsumer.subscribe({ topic: 'payment-requests-dead-letter', fromBeginning: true });
@@ -147,4 +148,4 @@ startRefundConsumer().catch(console.error);
 app.listen(port, async () => {
   console.log(`Acquiring Bank Service listening on port ${port}`);
   await startKafka();
-}); 
+});

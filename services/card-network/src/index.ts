@@ -48,65 +48,34 @@ app.get('/metrics', async (req, res) => {
 async function startKafka() {
   await producer.connect();
   await consumer.connect();
-  
-  await consumer.subscribe({ topic: 'payment-requests', fromBeginning: true });
-  
+  await consumer.subscribe({ topic: 'acquiring-bank-responses', fromBeginning: true });
   await consumer.run({
     eachMessage: async ({ message }) => {
       if (!message.value) return;
-      let paymentRequest;
+      let acquiringResponse;
       try {
-        paymentRequest = JSON.parse(message.value.toString());
-        console.log('Received payment request:', paymentRequest);
-        // Simulate card network processing
-        const isApproved = Math.random() > 0.1; // 90% approval rate
-        const response: PaymentResponse = {
-          requestId: paymentRequest.requestId,
-          transactionId: paymentRequest.transactionId || paymentRequest.requestId,
-          status: isApproved ? 'AUTHORIZED' : 'DECLINED',
-          message: isApproved ? 'Transaction authorized by card network' : 'Transaction declined by card network',
-          timestamp: new Date().toISOString()
-        };
-        // Send response to payment service
+        acquiringResponse = JSON.parse(message.value.toString());
         await producer.send({
-          topic: 'payment-responses',
+          topic: 'card-network-responses',
           messages: [
             {
-              key: paymentRequest.requestId,
-              value: JSON.stringify(response)
+              key: acquiringResponse.requestId,
+              value: JSON.stringify({
+                ...acquiringResponse,
+                status: 'PROCESSED_BY_CARD_NETWORK',
+                message: 'Processed by card network',
+                timestamp: new Date().toISOString()
+              })
             }
           ]
         });
       } catch (err) {
-        // Dead-letter: send failed message to dead-letter topic
-        console.error('[Card Network] Error processing payment, sending to dead-letter:', err);
         await producer.send({
-          topic: 'payment-requests-dead-letter',
+          topic: 'acquiring-bank-responses-dead-letter',
           messages: [
             { value: message.value?.toString() || '' }
           ]
         });
-      }
-    }
-  });
-
-  // Retry consumer for dead-letter topic
-  const retryConsumer = kafka.consumer({ groupId: 'card-network-retry-group' });
-  await retryConsumer.connect();
-  await retryConsumer.subscribe({ topic: 'payment-requests-dead-letter', fromBeginning: true });
-  await retryConsumer.run({
-    eachMessage: async ({ message }) => {
-      if (!message.value) return;
-      try {
-        const paymentRequest = JSON.parse(message.value.toString());
-        console.log('[Card Network] Retrying payment from dead-letter:', paymentRequest);
-        // Re-process the payment (re-publish to main topic)
-        await producer.send({
-          topic: 'payment-requests',
-          messages: [{ value: message.value.toString() }],
-        });
-      } catch (err) {
-        console.error('[Card Network] Error retrying payment from dead-letter:', err);
       }
     }
   });
@@ -116,4 +85,4 @@ async function startKafka() {
 app.listen(port, async () => {
   console.log(`Card Network Service listening on port ${port}`);
   await startKafka();
-}); 
+});

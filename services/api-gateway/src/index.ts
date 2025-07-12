@@ -38,12 +38,7 @@ app.post('/payments', async (req, res) => {
   }
 });
 
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', promClient.register.contentType);
-  res.end(await promClient.register.metrics());
-});
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`API Gateway listening on port ${PORT}`);
-}); 
+});

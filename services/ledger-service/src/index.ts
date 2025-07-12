@@ -2,10 +2,7 @@ import express from 'express';
 import { Kafka } from 'kafkajs';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
-import promClient from 'prom-client';
-import { PaymentInitiatedEvent, PaymentAuthorizedEvent, RefundInitiatedEvent, RefundCompletedEvent } from '@paygrid/lib';
 import { SettlementProcessor, SettlementConfig } from './settlement';
-import { z } from 'zod';
 import { PaymentRequestSchema, PaymentResponseSchema } from '@paygrid/lib';
 import pino from 'pino';
 import type { Request, Response, NextFunction } from 'express';
@@ -36,21 +33,6 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 app.use(express.json());
 
-const collectDefaultMetrics = promClient.collectDefaultMetrics;
-collectDefaultMetrics();
-
-// Add new metrics
-const ledgerEntriesCounter = new promClient.Counter({
-  name: 'ledger_entries_total',
-  help: 'Total number of ledger entries',
-  labelNames: ['entry_type', 'event_type']
-});
-
-const ledgerQueryDuration = new promClient.Histogram({
-  name: 'ledger_query_duration_seconds',
-  help: 'Duration of ledger queries in seconds',
-  labelNames: ['endpoint']
-});
 
 app.use((req, res, next) => {
   logger.info({ method: req.method, url: req.url, ip: req.ip }, 'Incoming request');
@@ -59,11 +41,6 @@ app.use((req, res, next) => {
 
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok' });
-});
-
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', promClient.register.contentType);
-  res.end(await promClient.register.metrics());
 });
 
 async function ensureLedgerTable() {
@@ -118,9 +95,12 @@ async function recordDoubleEntry({ transactionId, debitAccount, creditAccount, a
 async function startKafka() {
   await consumer.connect();
   await consumer.subscribe({ topic: 'payment-requests', fromBeginning: true });
-  await consumer.subscribe({ topic: 'payment-responses', fromBeginning: true });
+  await consumer.subscribe({ topic: 'acquiring-bank-responses', fromBeginning: true });
+  await consumer.subscribe({ topic: 'card-network-responses', fromBeginning: true });
+  await consumer.subscribe({ topic: 'issuing-bank-responses', fromBeginning: true });
   await consumer.subscribe({ topic: 'refund-requests', fromBeginning: true });
   await consumer.subscribe({ topic: 'refund-completed', fromBeginning: true });
+  await consumer.subscribe({ topic: 'settlement-events', fromBeginning: true });
   await consumer.run({
     eachMessage: async ({ topic, message }) => {
       if (!message.value) return;
@@ -180,6 +160,20 @@ async function startKafka() {
             });
             logger.info({ transactionId: event.transactionId, eventType: 'refund-completed' }, 'Processed refund-completed event');
           }
+        } else if (topic === 'settlement-events') {
+          // Record settlement event in ledger
+          await pool.query(
+            'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data, settled) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)',
+            [
+              event.settlementId,
+              event.amount > 0 ? 'credit' : 'debit',
+              event.account,
+              Math.abs(event.amount),
+              event.currency,
+              'settlement',
+              event,
+            ]
+          );
         }
       } catch (err) {
         logger.error({ err, topic, message: message.value?.toString() }, '[Ledger] Error processing event');
@@ -190,7 +184,6 @@ async function startKafka() {
 
 // Add new API endpoints
 app.get('/api/ledger/entries', async (req, res) => {
-  const timer = ledgerQueryDuration.startTimer({ endpoint: 'get_entries' });
   try {
     const {
       account,
@@ -242,7 +235,6 @@ app.get('/api/ledger/entries', async (req, res) => {
     params.push(limit, offset);
 
     const result = await pool.query(query, params);
-    timer();
     res.json({
       entries: result.rows,
       pagination: {
@@ -252,14 +244,12 @@ app.get('/api/ledger/entries', async (req, res) => {
       }
     });
   } catch (err) {
-    timer();
     console.error('[Ledger] Error querying entries:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 app.get('/api/ledger/accounts/:account/balance', async (req, res) => {
-  const timer = ledgerQueryDuration.startTimer({ endpoint: 'get_balance' });
   try {
     const { account } = req.params;
     const { currency } = req.query;
@@ -277,13 +267,11 @@ app.get('/api/ledger/accounts/:account/balance', async (req, res) => {
     const params = currency ? [account, currency] : [account];
     const result = await pool.query(query, params);
     
-    timer();
     res.json({
       account,
       balances: result.rows
     });
   } catch (err) {
-    timer();
     console.error('[Ledger] Error getting balance:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -300,7 +288,6 @@ function requireApiKey(req: Request, res: Response, next: NextFunction) {
 
 // Add settlement endpoints with API key protection
 app.post('/api/ledger/settlement', requireApiKey, async (req, res) => {
-  const timer = ledgerQueryDuration.startTimer({ endpoint: 'process_settlement' });
   try {
     const config: SettlementConfig = {
       settlementType: req.body.settlementType || 'manual',
@@ -310,17 +297,14 @@ app.post('/api/ledger/settlement', requireApiKey, async (req, res) => {
     };
 
     const result = await settlementProcessor.processSettlement(config);
-    timer();
     res.json(result);
   } catch (err) {
-    timer();
     console.error('[Ledger] Error processing settlement:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 app.get('/api/ledger/settlement/status', requireApiKey, async (req, res) => {
-  const timer = ledgerQueryDuration.startTimer({ endpoint: 'get_settlement_status' });
   try {
     const { currency, startTime, endTime } = req.query;
     
@@ -340,12 +324,10 @@ app.get('/api/ledger/settlement/status', requireApiKey, async (req, res) => {
     const params = [currency, startTime, endTime].filter(Boolean);
     const result = await pool.query(query, params);
     
-    timer();
     res.json({
       settlements: result.rows
     });
   } catch (err) {
-    timer();
     console.error('[Ledger] Error getting settlement status:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -356,4 +338,4 @@ app.listen(port, async () => {
   await producer.connect();
   await startKafka();
   logger.info(`Ledger Service listening on port ${port}`);
-}); 
+});

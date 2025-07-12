@@ -5,8 +5,6 @@ CREATE TABLE IF NOT EXISTS payment_transactions (
     created_at TIMESTAMP DEFAULT NOW()
 ); 
 
-ALTER TABLE payment_transactions
-  ALTER COLUMN status TYPE VARCHAR(32);
 
 CREATE TABLE IF NOT EXISTS payment_status_history (
     id SERIAL PRIMARY KEY,

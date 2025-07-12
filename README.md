@@ -50,3 +50,4 @@ The system is composed of modular Node.js microservices, each representing a rea
 ---
 
 See individual service directories for implementation details and API documentation. 
+![System Design](./system-design.png)

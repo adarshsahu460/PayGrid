@@ -1,18 +1,5 @@
 import { Pool } from 'pg';
 import { Kafka, Producer } from 'kafkajs';
-import promClient from 'prom-client';
-
-const settlementDuration = new promClient.Histogram({
-  name: 'settlement_duration_seconds',
-  help: 'Duration of settlement processing in seconds',
-  labelNames: ['settlement_type']
-});
-
-const settlementAmount = new promClient.Counter({
-  name: 'settlement_amount_total',
-  help: 'Total amount settled',
-  labelNames: ['settlement_type', 'currency']
-});
 
 export interface SettlementConfig {
   settlementType: 'daily' | 'hourly' | 'manual';
@@ -29,7 +16,6 @@ export class SettlementProcessor {
   ) {}
 
   async processSettlement(config: SettlementConfig) {
-    const timer = settlementDuration.startTimer({ settlement_type: config.settlementType });
     const settlementId = `SETTLEMENT-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
     try {
       // Get all unsettled entries for the time period
@@ -107,14 +93,8 @@ export class SettlementProcessor {
             })
           }]
         });
-
-        settlementAmount.inc({
-          settlement_type: config.settlementType,
-          currency: row.currency
-        }, Math.abs(row.net_amount));
       }
 
-      timer();
       return {
         status: 'completed',
         accountsProcessed: result.rowCount,
@@ -123,9 +103,8 @@ export class SettlementProcessor {
         settlementId
       };
     } catch (err) {
-      timer();
       console.error('[Settlement] Error processing settlement:', err);
       throw err;
     }
   }
-} 
+}

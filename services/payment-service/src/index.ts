@@ -52,7 +52,7 @@ app.get('/payments/:transactionId/status', async (req, res) => {
   if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
   res.json(result.rows[0]);
 });
-
+ 
 // Payment initiation with idempotency and status tracking
 app.post('/payments', async (req, res) => {
   try {
@@ -98,7 +98,6 @@ app.post('/payments', async (req, res) => {
     };
     // Store idempotency response in Redis (24h expiry)
     await redis.set(`idempotency:${idempotencyKey}`, JSON.stringify(response), { EX: 86400 });
-
     res.json(response);
   } catch (error) {
     console.error('Error processing payment:', error);
@@ -115,9 +114,10 @@ async function startKafka() {
   await consumer.connect();
   await redis.connect();
 
-  await consumer.subscribe({ topic: 'payment-responses', fromBeginning: true });
+  // Listen for final payment status from issuing bank
+  await consumer.subscribe({ topic: 'issuing-bank-responses', fromBeginning: true });
 
-  await consumer.run({
+  await consumer.run({ 
     eachMessage: async ({ message }: { message: any }) => {
       if (!message.value) return;
       try {
@@ -130,7 +130,7 @@ async function startKafka() {
         // Dead-letter: send failed message to dead-letter topic
         console.error('Error processing payment response, sending to dead-letter:', err);
         await producer.send({
-          topic: 'payment-responses-dead-letter',
+          topic: 'issuing-bank-responses-dead-letter',
           messages: [
             { value: message.value?.toString() || '' }
           ]
@@ -142,7 +142,7 @@ async function startKafka() {
   // Retry consumer for dead-letter topic
   const retryConsumer = kafka.consumer({ groupId: 'payment-service-retry-group' });
   await retryConsumer.connect();
-  await retryConsumer.subscribe({ topic: 'payment-responses-dead-letter', fromBeginning: true });
+  await retryConsumer.subscribe({ topic: 'issuing-bank-responses-dead-letter', fromBeginning: true });
   await retryConsumer.run({
     eachMessage: async ({ message }: { message: any }) => {
       if (!message.value) return;
@@ -151,7 +151,7 @@ async function startKafka() {
         console.log('[Payment Service] Retrying payment response from dead-letter:', response);
         // Re-process the payment response (re-publish to main topic)
         await producer.send({
-          topic: 'payment-responses',
+          topic: 'issuing-bank-responses',
           messages: [{ value: message.value.toString() }],
         });
       } catch (err) {
@@ -161,13 +161,6 @@ async function startKafka() {
   });
 }
 
-const collectDefaultMetrics = promClient.collectDefaultMetrics;
-collectDefaultMetrics();
-
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', promClient.register.contentType);
-  res.end(await promClient.register.metrics());
-});
 
 // Add payment status history tracking
 async function updatePaymentStatus(transactionId: string, newStatus: string, message: string, reason?: string) {
@@ -184,26 +177,6 @@ async function updatePaymentStatus(transactionId: string, newStatus: string, mes
   );
 }
 
-// Add refund endpoint with idempotency
-app.post('/payments/:transactionId/refund', async (req, res) => {
-  const { transactionId } = req.params;
-  const idempotencyKey = req.headers['idempotency-key'] || req.body.idempotencyKey;
-  if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key is required' });
-  const cacheKey = `refund:${transactionId}:${idempotencyKey}`;
-  const cached = await redis.get(cacheKey);
-  if (cached) return res.json(JSON.parse(cached));
-  // Check if payment is eligible for refund
-  const result = await pool.query('SELECT status FROM payment_transactions WHERE transaction_id = $1', [transactionId]);
-  if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
-  const status = result.rows[0].status;
-  if (status !== 'SETTLED') return res.status(400).json({ error: 'Only SETTLED payments can be refunded' });
-  // Mark as REFUNDED
-  await updatePaymentStatus(transactionId, 'REFUNDED', 'Payment refunded');
-  const responseObj = { transactionId, status: 'REFUNDED', message: 'Payment refunded' };
-  await redis.set(cacheKey, JSON.stringify(responseObj), { EX: 86400 });
-  res.json(responseObj);
-});
-
 // Add endpoint to get payment status history
 app.get('/payments/:transactionId/history', async (req, res) => {
   const { transactionId } = req.params;
@@ -213,6 +186,7 @@ app.get('/payments/:transactionId/history', async (req, res) => {
 
 // Kafka producer for refund events
 const refundProducer = producer;
+const refundConsumer = kafka.consumer({ groupId: 'payment-service-refund-group' });
 
 // Emit refund event
 async function emitRefundEvent(transactionId: string, amount: number, reason: string) {
@@ -229,7 +203,6 @@ async function emitRefundEvent(transactionId: string, amount: number, reason: st
 }
 
 // Listen for RefundCompletedEvent
-const refundConsumer = kafka.consumer({ groupId: 'payment-service-refund-group' });
 async function startRefundConsumer() {
   await refundConsumer.connect();
   await refundConsumer.subscribe({ topic: 'refund-completed', fromBeginning: true });
@@ -245,6 +218,7 @@ async function startRefundConsumer() {
     }
   });
 }
+
 startRefundConsumer().catch(console.error);
 
 // In compensation logic, trigger refund if payment was SETTLED or AUTHORIZED before FAILED
@@ -253,8 +227,8 @@ setInterval(async () => {
   for (const row of stuck.rows) {
     // Check history for SETTLED or AUTHORIZED before FAILED
     const hist = await pool.query("SELECT old_status FROM payment_status_history WHERE transaction_id = $1 AND new_status = 'FAILED' ORDER BY changed_at DESC LIMIT 1", [row.transaction_id]);
-    const prev = hist.rows[0]?.old_status;
-    if (prev === 'SETTLED' || prev === 'AUTHORIZED') {
+    const prev = hist.rows[0]?.old_status;``
+    if (prev === 'SETTLED' || prev === 'AUTHORIZED') {  
       // Avoid duplicate refunds
       const refundHist = await pool.query("SELECT 1 FROM payment_status_history WHERE transaction_id = $1 AND new_status = 'REFUND_PENDING'", [row.transaction_id]);
       if (refundHist.rows.length === 0) {
@@ -272,4 +246,4 @@ setInterval(async () => {
 app.listen(port, async () => {
   console.log(`Payment Service listening on port ${port}`);
   await startKafka();
-}); 
+});
