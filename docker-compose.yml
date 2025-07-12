@@ -59,15 +59,6 @@ services:
       - kafka
       - postgres
       - redis
-  psp-service:
-    build:
-      context: .
-      dockerfile: services/psp-service/Dockerfile
-    ports:
-      - "3002:3002"
-    depends_on:
-      - kafka
-      - payment-service
   card-network:
     build:
       context: .
@@ -92,14 +83,6 @@ services:
       - "3005:3005"
     depends_on:
       - kafka
-  3ds-service:
-    build:
-      context: .
-      dockerfile: services/3ds-service/Dockerfile
-    ports:  
-      - "3008:3008"
-    depends_on:
-      - redis
   ledger-service:
     build:
       context: .
@@ -115,46 +98,6 @@ services:
       - POSTGRES_DB=paygrid
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-  wallet-service:
-    build:
-      context: .
-      dockerfile: services/wallet-service/Dockerfile
-    ports:
-      - "3011:3011"
-    depends_on:
-      - postgres
-      - kafka
-  pci-service:
-    build:
-      context: .
-      dockerfile: services/pci-service/Dockerfile
-    ports:
-      - "3012:3012"
-  upiswitch-service:
-    build:
-      context: .
-      dockerfile: services/upiswitch-service/Dockerfile
-    ports:
-      - "3013:3013"
-    depends_on:
-      - kafka
-  netbanking-service:
-    build:
-      context: .
-      dockerfile: services/netbanking-service/Dockerfile
-    ports:
-      - "3014:3014"
-    depends_on:
-      - kafka
-  settlement-batch-service:
-    build:
-      context: .
-      dockerfile: services/settlement-batch-service/Dockerfile
-    ports:
-      - "3015:3015"
-    depends_on:
-      - kafka
-      - ledger-service
 networks:
   default:
     name: paygrid-net 
