@@ -36,13 +36,6 @@ app.get('/health', (req, res) => {
   res.json({ status: 'healthy' });
 });
 
-const collectDefaultMetrics = promClient.collectDefaultMetrics;
-collectDefaultMetrics();
-
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', promClient.register.contentType);
-  res.end(await promClient.register.metrics());
-});
 
 // Kafka message handling
 async function startKafka() {
