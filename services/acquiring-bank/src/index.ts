@@ -1,23 +1,13 @@
 import express from 'express';
 import { Kafka } from 'kafkajs';
-import { Pool } from 'pg';
 import dotenv from 'dotenv';
-import { PaymentRequest, PaymentResponse } from '@paygrid/lib';
-import promClient from 'prom-client';
+import opossum from 'opossum';
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3005;
 
-// PostgreSQL setup
-const pool = new Pool({
-  host: process.env.POSTGRES_HOST || 'postgres',
-  port: parseInt(process.env.POSTGRES_PORT || '5432'),
-  database: process.env.POSTGRES_DB || 'paygrid',
-  user: process.env.POSTGRES_USER || 'postgres',
-  password: process.env.POSTGRES_PASSWORD || 'postgres'
-});
 
 // Kafka setup
 const kafka = new Kafka({
@@ -32,10 +22,23 @@ const consumer = kafka.consumer({ groupId: 'acquiring-bank-group' });
 app.use(express.json());
 
 // Routes
-app.get('/health', (req, res) => {
+app.get('/health', (_, res) => {
   res.json({ status: 'healthy' });
 });
 
+// Circuit breaker for external calls
+const processPayment = async (paymentRequest: any) => {
+  // Simulate acquiring bank processing
+  const isApproved = Math.random() > 0.15; // 85% approval rate
+  return {
+    requestId: paymentRequest.requestId,
+    transactionId: paymentRequest.transactionId || paymentRequest.requestId,
+    status: isApproved ? 'SETTLED' : 'DECLINED',
+    message: isApproved ? 'Transaction settled by acquiring bank' : 'Transaction declined by acquiring bank',
+    timestamp: new Date().toISOString()
+  };
+};
+const breaker = new opossum(processPayment, { timeout: 5000, errorThresholdPercentage: 50, resetTimeout: 30000 });
 
 // Kafka message handling
 async function startKafka() {
@@ -48,16 +51,7 @@ async function startKafka() {
       let paymentRequest;
       try {
         paymentRequest = JSON.parse(message.value.toString());
-        console.log('Received payment request:', paymentRequest);
-        // Simulate acquiring bank processing
-        const isApproved = Math.random() > 0.15; // 85% approval rate
-        const response: PaymentResponse = {
-          requestId: paymentRequest.requestId,
-          transactionId: paymentRequest.transactionId || paymentRequest.requestId,
-          status: isApproved ? 'SETTLED' : 'DECLINED',
-          message: isApproved ? 'Transaction settled by acquiring bank' : 'Transaction declined by acquiring bank',
-          timestamp: new Date().toISOString()
-        };
+        await breaker.fire(paymentRequest);
         // Publish to next stage
         await producer.send({ 
           topic: 'acquiring-bank-responses',

@@ -2,14 +2,14 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
-import promClient from 'prom-client';
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 
-const collectDefaultMetrics = promClient.collectDefaultMetrics;
-collectDefaultMetrics();
+function sendError(res: express.Response, status: number, message: string) {
+  res.status(status).json({ error: message });
+}
 
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok' });
@@ -24,21 +24,59 @@ app.get('/idempotency-key', (_req, res) => {
 app.post('/payments', async (req, res) => {
   const idempotencyKey = req.headers['idempotency-key'] || req.body.idempotencyKey;
   if (!idempotencyKey) {
-    return res.status(400).json({ error: 'Idempotency-Key is required' });
+    return sendError(res, 400, 'Idempotency-Key is required');
   }
   try {
+    // Step 1: Fraud Detection
+    const fraudResp = await axios.post(
+      process.env.FRAUD_DETECTION_URL || 'http://fraud-detection-service:3008/analyze',
+      req.body
+    );
+    if (fraudResp.data.risk === 'high') {
+      return sendError(res, 403, 'Transaction flagged as high risk');
+    }
+
+    // Step 2: Tokenization
+    const tokenResp = await axios.post(
+      process.env.TOKENIZATION_URL || 'http://tokenization-service:3007/tokenize',
+      { cardNumber: req.body.cardNumber }
+    );
+    if (!tokenResp.data.token) {
+      return sendError(res, 500, 'Tokenization failed');
+    }
+    // Replace cardNumber with token
+    const paymentBody = { ...req.body, cardToken: tokenResp.data.token };
+    delete paymentBody.cardNumber;
+
+    // Step 3: Payment Service
     const response = await axios.post(
       process.env.PAYMENT_SERVICE_URL || 'http://payment-service:3001/payments',
-      req.body,
+      paymentBody,
       { headers: { 'Idempotency-Key': idempotencyKey } }
     );
     res.status(response.status).json(response.data);
   } catch (err: any) {
-    res.status(err.response?.status || 500).json({ error: err.message });
+    sendError(res, err.response?.status || 500, err.message);
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`API Gateway listening on port ${PORT}`);
+});
+
+// Optional: Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down...');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down...');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
 });

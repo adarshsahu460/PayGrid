@@ -14,10 +14,8 @@
     "redis": "^4.6.11",
     "pg": "^8.11.3",
     "dotenv": "^16.3.1",
-    "prom-client": "^14.1.1",
-    "@paygrid/lib": "file:../../common/lib",
-    "pino": "^8.0.0",
-    "zod": "^3.22.4"
+    "zod": "^3.22.4",
+    "pino": "^8.0.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

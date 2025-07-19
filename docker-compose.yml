@@ -14,6 +14,12 @@ services:
       - KAFKA_CFG_LOG_DIRS=/tmp/kraft-combined-logs
     volumes:
       - kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
   kafka-init-topics:
     image: bitnami/kafka:3.4
     depends_on:
@@ -36,56 +42,123 @@ services:
       - "5432:5432"
     volumes:
       - ./services/payment-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paygrid"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
   redis:
     image: redis:6.2
     ports:
-      - "6379:6379"
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
   api-gateway:
-    build:
-      context: .
-      dockerfile: services/api-gateway/Dockerfile
+    build: ./services/api-gateway
     ports:
       - "3000:3000" 
     depends_on:
       - payment-service
+    environment:
+      - PORT=3000
+      # Add other required env vars here
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
   payment-service:
-    build:
-      context: .
-      dockerfile: services/payment-service/Dockerfile
+    build: ./services/payment-service
     ports:
       - "3001:3001"
     depends_on:
       - kafka
       - postgres
       - redis
+    environment:
+      - POSTGRES_USER=paygrid
+      - POSTGRES_PASSWORD=paygrid
+      - POSTGRES_DB=paygrid
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6380
+      - KAFKA_BROKER=kafka:9092
+      - PORT=3001
+      # Add other required env vars here
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
   card-network:
-    build:
-      context: .
-      dockerfile: services/card-network/Dockerfile
+    build: ./services/card-network
     ports:
       - "3003:3003"
     depends_on:
       - kafka
+    environment:
+      - PORT=3003
+      # Add other required env vars here
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
   issuing-bank:
-    build:
-      context: .
-      dockerfile: services/issuing-bank/Dockerfile
+    build: ./services/issuing-bank
     ports:
       - "3004:3004"
     depends_on:
       - kafka
+    environment:
+      - PORT=3004
+      # Add other required env vars here
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
   acquiring-bank:
-    build:
-      context: .
-      dockerfile: services/acquiring-bank/Dockerfile
+    build: ./services/acquiring-bank
     ports:
       - "3005:3005"
     depends_on:
       - kafka
-  ledger-service:
-    build:
-      context: .
-      dockerfile: services/ledger-service/Dockerfile
+    environment:
+      - PORT=3005
+      # Add other required env vars here
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
+  ledger-service: 
+    build: ./services/ledger-service
     ports:
       - "3010:3010"
     depends_on:
@@ -97,6 +170,70 @@ services:
       - POSTGRES_DB=paygrid
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3010/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
+  debezium:
+    image: debezium/connect:2.4
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - GROUP_ID=debezium
+      - CONFIG_STORAGE_TOPIC=debezium-configs
+      - OFFSET_STORAGE_TOPIC=debezium-offsets
+      - STATUS_STORAGE_TOPIC=debezium-status
+      - CONNECTOR_CLASS=io.debezium.connector.postgresql.PostgresConnector
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=paygrid
+      - DATABASE_PASSWORD=paygrid
+      - DATABASE_DBNAME=paygrid
+      - PLUGIN_NAME=pgoutput
+    ports:
+      - "8083:8083"
+    restart: unless-stopped
+    networks:
+      - default
+  notification-service:
+    build: ./services/notification-service
+    ports:
+      - "3006:3006"
+    depends_on:
+      - kafka
+    environment:
+      - PORT=3006
+      - KAFKA_BROKER=kafka:9092
+    restart: unless-stopped
+    networks:
+      - default
+  tokenization-service:
+    build: ./services/tokenization-service
+    ports:
+      - "3007:3007"
+    environment:
+      - PORT=3007
+    restart: unless-stopped
+    networks:
+      - default
+  fraud-detection-service:
+    build: ./services/fraud-detection-service
+    ports:
+      - "3008:3008"
+    depends_on:
+      - kafka
+    environment:
+      - PORT=3008
+      - KAFKA_BROKER=kafka:9092
+    restart: unless-stopped
+    networks:
+      - default
 volumes:
   kafka-data:
 networks:

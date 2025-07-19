@@ -41,3 +41,46 @@ The system is composed of modular Node.js microservices, each representing a rea
 
 See individual service directories for implementation details and API documentation. 
 ![System Design](./sd.png)
+
+# PayGrid
+
+## Overview
+
+PayGrid is a modular payment processing platform with microservices for payment, ledger, acquiring/issuing banks, card network, and API gateway.
+
+## Services
+
+- api-gateway
+- payment-service
+- ledger-service
+- acquiring-bank
+- issuing-bank
+- card-network
+
+## Setup
+
+1. Copy `.env.example` to `.env` in each service and fill in values.
+2. Run `docker-compose up --build`.
+
+## Endpoints
+
+- `/health` - Health check for all services
+- `/payments` - Payment initiation (API Gateway)
+- ... (document other endpoints)
+
+## Environment Variables
+
+See `.env.example` in each service.
+
+## Development
+
+- Use `npm run dev` in each service for hot-reload.
+- Use ESLint and Prettier for code quality.
+
+## Graceful Shutdown
+
+All services handle SIGTERM/SIGINT for clean shutdown.
+
+## License
+
+MIT

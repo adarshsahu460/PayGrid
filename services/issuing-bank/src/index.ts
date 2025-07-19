@@ -1,22 +1,12 @@
 import express from 'express';
 import { Kafka } from 'kafkajs';
-import { Pool } from 'pg';
 import dotenv from 'dotenv';
-import { PaymentRequest, PaymentResponse } from '@paygrid/lib';
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3004;
 
-// PostgreSQL setup
-const pool = new Pool({
-  host: process.env.POSTGRES_HOST || 'postgres',
-  port: parseInt(process.env.POSTGRES_PORT || '5432'),
-  database: process.env.POSTGRES_DB || 'paygrid',
-  user: process.env.POSTGRES_USER || 'postgres',
-  password: process.env.POSTGRES_PASSWORD || 'postgres'
-});
 
 // Kafka setup
 const kafka = new Kafka({
@@ -31,7 +21,7 @@ const consumer = kafka.consumer({ groupId: 'issuing-bank-group' });
 app.use(express.json());
 
 // Routes
-app.get('/health', (req, res) => {
+app.get('/health', (_, res) => {
   res.json({ status: 'healthy' });
 });
 
@@ -49,7 +39,7 @@ async function startKafka() {
         console.log('Received card network response:', cardNetworkResponse);
         // Simulate issuing bank processing
         const isApproved = Math.random() > 0.2; // 80% approval rate
-        const response: PaymentResponse = {
+        const response: any = {
           requestId: cardNetworkResponse.requestId,
           transactionId: cardNetworkResponse.transactionId || cardNetworkResponse.requestId,
           status: isApproved ? 'AUTHORIZED' : 'DECLINED',

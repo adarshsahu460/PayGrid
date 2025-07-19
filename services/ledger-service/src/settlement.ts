@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { Kafka, Producer } from 'kafkajs';
+import { Producer } from 'kafkajs';
 
 export interface SettlementConfig {
   settlementType: 'daily' | 'hourly' | 'manual';
@@ -12,7 +12,6 @@ export class SettlementProcessor {
   constructor(
     private pool: Pool,
     private producer: Producer,
-    private kafka: Kafka
   ) {}
 
   async processSettlement(config: SettlementConfig) {

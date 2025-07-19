@@ -1,11 +1,38 @@
 import express from 'express';
 import { Kafka } from 'kafkajs';
+import { z } from 'zod';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 import { SettlementProcessor, SettlementConfig } from './settlement';
-import { PaymentRequestSchema, PaymentResponseSchema } from '@paygrid/lib';
 import pino from 'pino';
-import type { Request, Response, NextFunction } from 'express';
+
+export const PaymentRequestSchema = z.object({
+  requestId: z.string(),
+  merchantId: z.string(),
+  amount: z.number().positive(),
+  currency: z.string().length(3),
+  cardNumber: z.string().min(13).max(19),
+  expiryMonth: z.number().min(1).max(12),
+  expiryYear: z.number().min(new Date().getFullYear()),
+  cvv: z.string().length(3),
+  description: z.string().optional(),
+  metadata: z.record(z.string()).optional(),
+  transactionId: z.string().optional()
+});
+
+// Payment Response Schema
+export const PaymentResponseSchema = z.object({
+  requestId: z.string(),
+  transactionId: z.string(),
+  status: z.enum(['APPROVED', 'DECLINED', 'PROCESSING', 'FAILED', 'AUTHORIZED', 'SETTLED']),
+  message: z.string(),
+  timestamp: z.string()
+});
+
+// Type definitions
+export type PaymentRequest = z.infer<typeof PaymentRequestSchema>;
+export type PaymentResponse = z.infer<typeof PaymentResponseSchema>;
+
 
 dotenv.config();
 
@@ -27,20 +54,20 @@ const kafka = new Kafka({
 
 const consumer = kafka.consumer({ groupId: 'ledger-service-group' });
 const producer = kafka.producer();
-const settlementProcessor = new SettlementProcessor(pool, producer, kafka);
+const settlementProcessor = new SettlementProcessor(pool, producer);
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 app.use(express.json());
 
 
-app.use((req, res, next) => {
+app.use((req, _, next) => {
   logger.info({ method: req.method, url: req.url, ip: req.ip }, 'Incoming request');
   next();
 });
 
 app.get('/health', (_req, res) => {
-  res.status(200).json({ status: 'ok' });
+  return res.status(200).json({ status: 'ok' });
 });
 
 async function ensureLedgerTable() {
@@ -235,7 +262,7 @@ app.get('/api/ledger/entries', async (req, res) => {
     params.push(limit, offset);
 
     const result = await pool.query(query, params);
-    res.json({
+    return res.json({
       entries: result.rows,
       pagination: {
         page: Number(page),
@@ -245,7 +272,7 @@ app.get('/api/ledger/entries', async (req, res) => {
     });
   } catch (err) {
     console.error('[Ledger] Error querying entries:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -267,23 +294,23 @@ app.get('/api/ledger/accounts/:account/balance', async (req, res) => {
     const params = currency ? [account, currency] : [account];
     const result = await pool.query(query, params);
     
-    res.json({
+    return res.json({
       account,
       balances: result.rows
     });
   } catch (err) {
     console.error('[Ledger] Error getting balance:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // API key middleware
-function requireApiKey(req: Request, res: Response, next: NextFunction) {
+function requireApiKey(req: express.Request, res: express.Response, next: express.NextFunction) {
   const apiKey = req.headers['x-api-key'] || req.query.api_key;
   if (!apiKey || apiKey !== process.env.LEDGER_API_KEY) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  next();
+  return next();
 }
 
 // Add settlement endpoints with API key protection
@@ -292,15 +319,15 @@ app.post('/api/ledger/settlement', requireApiKey, async (req, res) => {
     const config: SettlementConfig = {
       settlementType: req.body.settlementType || 'manual',
       currency: req.body.currency,
-      startTime: req.body.startTime ? new Date(req.body.startTime) : undefined,
-      endTime: req.body.endTime ? new Date(req.body.endTime) : undefined
+      ...(req.body.startTime && { startTime: new Date(req.body.startTime) }),
+      ...(req.body.endTime && { endTime: new Date(req.body.endTime) })
     };
 
     const result = await settlementProcessor.processSettlement(config);
-    res.json(result);
+    return res.json(result);
   } catch (err) {
     console.error('[Ledger] Error processing settlement:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -323,13 +350,13 @@ app.get('/api/ledger/settlement/status', requireApiKey, async (req, res) => {
 
     const params = [currency, startTime, endTime].filter(Boolean);
     const result = await pool.query(query, params);
-    
-    res.json({
+
+    return res.json({
       settlements: result.rows
     });
   } catch (err) {
     console.error('[Ledger] Error getting settlement status:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 

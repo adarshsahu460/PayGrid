@@ -3,8 +3,45 @@ import { Kafka } from 'kafkajs';
 import { Pool } from 'pg';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
-import { PaymentRequest, PaymentResponse, generateTransactionId } from '@paygrid/lib';
-import promClient from 'prom-client';
+import { z } from 'zod';
+
+const PaymentRequestSchema = z.object({
+  requestId: z.string(),
+  merchantId: z.string(),
+  amount: z.number().positive(),
+  currency: z.string().length(3),
+  cardNumber: z.string().min(13).max(19),
+  expiryMonth: z.number().min(1).max(12),
+  expiryYear: z.number().min(new Date().getFullYear()),
+  cvv: z.string().length(3),
+  description: z.string().optional(),
+  metadata: z.record(z.string()).optional(),
+  transactionId: z.string().optional()
+});
+
+// Payment Response Schema
+const PaymentResponseSchema = z.object({
+  requestId: z.string(),
+  transactionId: z.string(),
+  status: z.enum(['APPROVED', 'DECLINED', 'PROCESSING', 'FAILED', 'AUTHORIZED', 'SETTLED']),
+  message: z.string(),
+  timestamp: z.string()
+});
+
+// Type definitions
+type BasePaymentRequest = z.infer<typeof PaymentRequestSchema>;
+type PaymentResponse = z.infer<typeof PaymentResponseSchema>;
+
+function generateTransactionId(): string {
+  return `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+
+// Extend PaymentRequest to include cardToken and clientId
+interface PaymentRequest extends BasePaymentRequest {
+  cardToken: string;
+  clientId: string;
+}
 
 dotenv.config();
 
@@ -38,8 +75,8 @@ const consumer = kafka.consumer({ groupId: 'payment-service-group' });
 app.use(express.json());
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy' });
+app.get('/health', (_, res) => {
+  return res.json({ status: 'healthy' });
 });
 
 // Query payment status
@@ -50,9 +87,18 @@ app.get('/payments/:transactionId/status', async (req, res) => {
     [transactionId]
   );
   if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
-  res.json(result.rows[0]);
+  return res.json(result.rows[0]);
 });
  
+// Add webhook registration
+const webhookMap: Map<string, string> = new Map();
+app.post('/webhooks/register', (req, res) => {
+  const { clientId, url } = req.body;
+  if (!clientId || !url) return res.status(400).json({ error: 'clientId and url required' });
+  webhookMap.set(clientId, url);
+  return res.json({ status: 'registered' });
+});
+
 // Payment initiation with idempotency and status tracking
 app.post('/payments', async (req, res) => {
   try {
@@ -98,10 +144,10 @@ app.post('/payments', async (req, res) => {
     };
     // Store idempotency response in Redis (24h expiry)
     await redis.set(`idempotency:${idempotencyKey}`, JSON.stringify(response), { EX: 86400 });
-    res.json(response);
+    return res.json(response);
   } catch (error) {
     console.error('Error processing payment:', error);
-    res.status(500).json({
+    return res.status(500).json({
       status: 'FAILED',
       message: 'Error processing payment request'
     });
@@ -175,13 +221,18 @@ async function updatePaymentStatus(transactionId: string, newStatus: string, mes
     'INSERT INTO payment_status_history (transaction_id, old_status, new_status, reason) VALUES ($1, $2, $3, $4)',
     [transactionId, oldStatus, newStatus, reason || message]
   );
+  // In updatePaymentStatus, emit status change to Kafka for notification service
+  await producer.send({
+    topic: 'payment-status-changes',
+    messages: [{ value: JSON.stringify({ transactionId, status: newStatus }) }]
+  });
 }
 
 // Add endpoint to get payment status history
 app.get('/payments/:transactionId/history', async (req, res) => {
   const { transactionId } = req.params;
   const result = await pool.query('SELECT old_status, new_status, changed_at, reason FROM payment_status_history WHERE transaction_id = $1 ORDER BY changed_at ASC', [transactionId]);
-  res.json(result.rows);
+  return res.json(result.rows);
 });
 
 // Kafka producer for refund events
