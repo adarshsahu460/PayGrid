@@ -13,7 +13,7 @@ services:
       - ALLOW_PLAINTEXT_LISTENER=yes
       - KAFKA_CFG_LOG_DIRS=/tmp/kraft-combined-logs
     volumes:
-      - kafka-data:/tmp/kraft-combined-logs
+      - kafka-data:/bitnami/kafka
     healthcheck:
       test: ["CMD", "kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
       interval: 15s
@@ -94,7 +94,7 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - REDIS_HOST=redis
-      - REDIS_PORT=6380
+      - REDIS_PORT=6379
       - KAFKA_BROKER=kafka:9092
       - PORT=3001
       # Add other required env vars here
