@@ -1,5 +1,6 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import logger from './logger';
 dotenv.config();
 
 const app = express();
@@ -23,5 +24,5 @@ app.post('/analyze', (req, res) => {
 
 const PORT = process.env.PORT || 3008;
 app.listen(PORT, () => {
-  console.log(`Fraud Detection Service listening on port ${PORT}`);
+  logger.info(`Fraud Detection Service listening on port ${PORT}`);
 });

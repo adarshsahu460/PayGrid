@@ -2,6 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
+import logger from './logger';
 dotenv.config();
 
 const app = express();
@@ -62,21 +63,21 @@ app.post('/payments', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
-  console.log(`API Gateway listening on port ${PORT}`);
+  logger.info(`API Gateway listening on port ${PORT}`);
 });
 
 // Optional: Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down...');
+  logger.info('SIGINT received, shutting down...');
   server.close(() => {
-    console.log('Server closed');
+    logger.info('Server closed');
     process.exit(0);
   });
 });
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down...');
+  logger.info('SIGTERM received, shutting down...');
   server.close(() => {
-    console.log('Server closed');
+    logger.info('Server closed');
     process.exit(0);
   });
 });

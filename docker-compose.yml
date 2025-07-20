@@ -66,10 +66,11 @@ services:
     build: ./services/api-gateway
     ports:
       - "3000:3000" 
+    env_file:
+      - ./services/api-gateway/.env
     depends_on:
       - payment-service
     environment:
-      - PORT=3000
       # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -83,20 +84,13 @@ services:
     build: ./services/payment-service
     ports:
       - "3001:3001"
+    env_file:
+      - ./services/payment-service/.env
     depends_on:
       - kafka
       - postgres
       - redis
     environment:
-      - POSTGRES_USER=paygrid
-      - POSTGRES_PASSWORD=paygrid
-      - POSTGRES_DB=paygrid
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - KAFKA_BROKER=kafka:9092
-      - PORT=3001
       # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
@@ -110,10 +104,11 @@ services:
     build: ./services/card-network
     ports:
       - "3003:3003"
+    env_file:
+      - ./services/card-network/.env
     depends_on:
       - kafka
     environment:
-      - PORT=3003
       # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
@@ -127,10 +122,11 @@ services:
     build: ./services/issuing-bank
     ports:
       - "3004:3004"
+    env_file:
+      - ./services/issuing-bank/.env
     depends_on:
       - kafka
     environment:
-      - PORT=3004
       # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
@@ -144,10 +140,11 @@ services:
     build: ./services/acquiring-bank
     ports:
       - "3005:3005"
+    env_file:
+      - ./services/acquiring-bank/.env
     depends_on:
       - kafka
     environment:
-      - PORT=3005
       # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
@@ -161,15 +158,13 @@ services:
     build: ./services/ledger-service
     ports:
       - "3010:3010"
+    env_file:
+      - ./services/ledger-service/.env
     depends_on:
       - kafka
       - postgres
     environment:
-      - POSTGRES_USER=paygrid
-      - POSTGRES_PASSWORD=paygrid
-      - POSTGRES_DB=paygrid
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
+      - PORT=3010
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3010/health"]
       interval: 10s
@@ -205,11 +200,12 @@ services:
     build: ./services/notification-service
     ports:
       - "3006:3006"
+    env_file:
+      - ./services/notification-service/.env
     depends_on:
       - kafka
     environment:
-      - PORT=3006
-      - KAFKA_BROKER=kafka:9092
+      # Add other required env vars here
     restart: unless-stopped
     networks:
       - default
@@ -217,8 +213,10 @@ services:
     build: ./services/tokenization-service
     ports:
       - "3007:3007"
+    env_file:
+      - ./services/tokenization-service/.env
     environment:
-      - PORT=3007
+      # Add other required env vars here
     restart: unless-stopped
     networks:
       - default
@@ -226,11 +224,12 @@ services:
     build: ./services/fraud-detection-service
     ports:
       - "3008:3008"
+    env_file:
+      - ./services/fraud-detection-service/.env
     depends_on:
       - kafka
     environment:
-      - PORT=3008
-      - KAFKA_BROKER=kafka:9092
+      # Add other required env vars here
     restart: unless-stopped
     networks:
       - default

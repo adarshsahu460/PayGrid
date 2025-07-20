@@ -1,6 +1,7 @@
 import express from 'express';
 import { Kafka } from 'kafkajs';
 import dotenv from 'dotenv';
+import logger from './logger';
 
 dotenv.config();
 
@@ -36,7 +37,7 @@ async function startKafka() {
       let cardNetworkResponse;
       try {
         cardNetworkResponse = JSON.parse(message.value.toString());
-        console.log('Received card network response:', cardNetworkResponse);
+        logger.info({ cardNetworkResponse }, 'Received card network response:');
         // Simulate issuing bank processing
         const isApproved = Math.random() > 0.2; // 80% approval rate
         const response: any = {
@@ -57,7 +58,7 @@ async function startKafka() {
         });
       } catch (err) {
         // Dead-letter: send failed message to dead-letter topic
-        console.error('[Issuing Bank] Error processing payment, sending to dead-letter:', err);
+        logger.error({ err }, '[Issuing Bank] Error processing payment, sending to dead-letter:');
         await producer.send({
           topic: 'card-network-responses-dead-letter',
           messages: [
@@ -98,10 +99,10 @@ async function startRefundConsumer() {
     }
   });
 }
-startRefundConsumer().catch(console.error);
+startRefundConsumer().catch(err => logger.error({ err }, 'Error starting refund consumer'));
 
 // Start the service
 app.listen(port, async () => {
-  console.log(`Issuing Bank Service listening on port ${port}`);
+  logger.info(`Issuing Bank Service listening on port ${port}`);
   await startKafka();
 });

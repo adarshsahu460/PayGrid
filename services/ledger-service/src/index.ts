@@ -102,20 +102,34 @@ async function recordDoubleEntry({ transactionId, debitAccount, creditAccount, a
   eventType: string,
   eventData: any
 }) {
-  // Idempotency: check both sides
-  const debitExists = await ledgerEntryExists(transactionId, eventType, 'debit', debitAccount);
-  const creditExists = await ledgerEntryExists(transactionId, eventType, 'credit', creditAccount);
-  if (!debitExists) {
-    await pool.query(
-      'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [transactionId, 'debit', debitAccount, amount, currency, eventType, eventData]
-    );
-  }
-  if (!creditExists) {
-    await pool.query(
-      'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [transactionId, 'credit', creditAccount, amount, currency, eventType, eventData]
-    );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Idempotency checks remain, but now they are part of a transaction
+    const debitExists = await ledgerEntryExists(transactionId, eventType, 'debit', debitAccount);
+    if (!debitExists) {
+      await client.query(
+        'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [transactionId, 'debit', debitAccount, amount, currency, eventType, eventData]
+      );
+    }
+
+    const creditExists = await ledgerEntryExists(transactionId, eventType, 'credit', creditAccount);
+    if (!creditExists) {
+      await client.query(
+        'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [transactionId, 'credit', creditAccount, amount, currency, eventType, eventData]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    logger.error({ err: error, transactionId, eventType }, 'Failed to record double entry, transaction rolled back.');
+    throw error; // Re-throw to be handled by the consumer
+  } finally {
+    client.release();
   }
 }
 
@@ -131,8 +145,10 @@ async function startKafka() {
   await consumer.run({
     eachMessage: async ({ topic, message }) => {
       if (!message.value) return;
+      const eventPayload = message.value.toString();
       try {
-        const event = JSON.parse(message.value.toString());
+        const event = JSON.parse(eventPayload);
+        // ... existing logic for each topic
         if (topic === 'payment-requests') {
           const parsed = PaymentRequestSchema.safeParse(event);
           if (!parsed.success) throw new Error('Invalid PaymentRequest event');
@@ -203,7 +219,25 @@ async function startKafka() {
           );
         }
       } catch (err) {
-        logger.error({ err, topic, message: message.value?.toString() }, '[Ledger] Error processing event');
+        const error = err as Error;
+        logger.error({ err, topic, message: eventPayload }, '[Ledger] Error processing event. Sending to DLQ.');
+        try {
+          await producer.send({
+            topic: `${topic}-dead-letter`,
+            messages: [{
+              key: message.key,
+              value: JSON.stringify({
+                original_topic: topic,
+                error: error.message,
+                stack: error.stack,
+                payload: eventPayload,
+                timestamp: new Date().toISOString()
+              })
+            }]
+          });
+        } catch (dlqError) {
+          logger.error({ err: dlqError, topic }, 'FATAL: Failed to send message to DLQ.');
+        }
       }
     }
   });
@@ -271,7 +305,7 @@ app.get('/api/ledger/entries', async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('[Ledger] Error querying entries:', err);
+    logger.error({ err }, '[Ledger] Error querying entries:');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -299,7 +333,7 @@ app.get('/api/ledger/accounts/:account/balance', async (req, res) => {
       balances: result.rows
     });
   } catch (err) {
-    console.error('[Ledger] Error getting balance:', err);
+    logger.error({ err }, '[Ledger] Error getting balance:');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -326,7 +360,7 @@ app.post('/api/ledger/settlement', requireApiKey, async (req, res) => {
     const result = await settlementProcessor.processSettlement(config);
     return res.json(result);
   } catch (err) {
-    console.error('[Ledger] Error processing settlement:', err);
+    logger.error({ err }, '[Ledger] Error processing settlement:');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -355,7 +389,7 @@ app.get('/api/ledger/settlement/status', requireApiKey, async (req, res) => {
       settlements: result.rows
     });
   } catch (err) {
-    console.error('[Ledger] Error getting settlement status:', err);
+    logger.error({ err }, '[Ledger] Error getting settlement status:');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });

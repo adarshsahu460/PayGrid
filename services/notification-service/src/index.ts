@@ -2,6 +2,7 @@ import express from 'express';
 import { Kafka } from 'kafkajs';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import logger from './logger';
 dotenv.config();
 
 const app = express();
@@ -31,15 +32,17 @@ async function startKafka() {
       const event = JSON.parse(message.value.toString());
       const url = webhookRegistry.get(event.clientId);
       if (url) {
-        await axios.post(url, event).catch(() => {});
+        await axios.post(url, event).catch(err => {
+          logger.error({ err, url, event }, 'Failed to send webhook');
+        });
       }
       // TODO: Add email sending logic here
     }
   });
 }
-startKafka().catch(console.error);
+startKafka().catch(err => logger.error({ err }, 'Error starting Kafka consumer'));
 
 const PORT = process.env.PORT || 3006;
 app.listen(PORT, () => {
-  console.log(`Notification Service listening on port ${PORT}`);
+  logger.info(`Notification Service listening on port ${PORT}`);
 });

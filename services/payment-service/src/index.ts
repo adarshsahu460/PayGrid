@@ -4,6 +4,8 @@ import { Pool } from 'pg';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import opossum from 'opossum';
+import logger from './logger';
 
 const PaymentRequestSchema = z.object({
   requestId: z.string(),
@@ -124,18 +126,28 @@ app.post('/payments', async (req, res) => {
     await redis.set(`payment:${transactionId}`, JSON.stringify(paymentRequest), { EX: 3600 });
 
     // Send to Kafka for processing
-    await producer.send({
-      topic: 'payment-requests',
-      messages: [
-        {
-          key: transactionId,
-          value: JSON.stringify({
-            ...paymentRequest,
-            transactionId
-          })
-        }
-      ]
-    });
+    const kafkaProducerBreaker = new opossum(
+      async () =>
+        producer.send({
+          topic: 'payment-requests',
+          messages: [
+            {
+              key: transactionId,
+              value: JSON.stringify({
+                ...paymentRequest,
+                transactionId
+              })
+            }
+          ]
+        }),
+      {
+        timeout: 3000, // If the function fails to complete in 3 seconds, trigger a failure
+        errorThresholdPercentage: 50, // When 50% of requests fail, open the circuit
+        resetTimeout: 30000 // After 30 seconds, try again.
+      }
+    );
+
+    await kafkaProducerBreaker.fire();
 
     const response = {
       transactionId,
@@ -146,7 +158,7 @@ app.post('/payments', async (req, res) => {
     await redis.set(`idempotency:${idempotencyKey}`, JSON.stringify(response), { EX: 86400 });
     return res.json(response);
   } catch (error) {
-    console.error('Error processing payment:', error);
+    logger.error({ err: error }, 'Error processing payment:');
     return res.status(500).json({
       status: 'FAILED',
       message: 'Error processing payment request'
@@ -168,13 +180,13 @@ async function startKafka() {
       if (!message.value) return;
       try {
         const response: PaymentResponse = JSON.parse(message.value.toString());
-        console.log('Received payment response:', response);
+        logger.info({ response }, 'Received payment response:');
 
         // Update payment status in database
         await updatePaymentStatus(response.transactionId, response.status, response.message);
       } catch (err) {
         // Dead-letter: send failed message to dead-letter topic
-        console.error('Error processing payment response, sending to dead-letter:', err);
+        logger.error({ err }, 'Error processing payment response, sending to dead-letter:');
         await producer.send({
           topic: 'issuing-bank-responses-dead-letter',
           messages: [
@@ -194,14 +206,14 @@ async function startKafka() {
       if (!message.value) return;
       try {
         const response = JSON.parse(message.value.toString());
-        console.log('[Payment Service] Retrying payment response from dead-letter:', response);
+        logger.info({ response }, '[Payment Service] Retrying payment response from dead-letter:');
         // Re-process the payment response (re-publish to main topic)
         await producer.send({
           topic: 'issuing-bank-responses',
           messages: [{ value: message.value.toString() }],
         });
       } catch (err) {
-        console.error('[Payment Service] Error retrying payment response from dead-letter:', err);
+        logger.error({ err }, '[Payment Service] Error retrying payment response from dead-letter:');
       }
     }
   });
@@ -295,6 +307,6 @@ setInterval(async () => {
 
 // Start the service
 app.listen(port, async () => {
-  console.log(`Payment Service listening on port ${port}`);
+  logger.info(`Payment Service listening on port ${port}`);
   await startKafka();
 });

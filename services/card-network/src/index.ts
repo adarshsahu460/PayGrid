@@ -1,6 +1,7 @@
 import express from 'express';
 import { Kafka } from 'kafkajs';
 import dotenv from 'dotenv';
+import logger from './logger';
 
 dotenv.config();
 
@@ -51,6 +52,7 @@ async function startKafka() {
           ]
         });
       } catch (err) {
+        logger.error({ err }, 'Error processing acquiring bank response, sending to dead-letter:');
         await producer.send({
           topic: 'acquiring-bank-responses-dead-letter',
           messages: [
@@ -64,6 +66,6 @@ async function startKafka() {
 
 // Start the service
 app.listen(port, async () => {
-  console.log(`Card Network Service listening on port ${port}`);
+  logger.info(`Card Network Service listening on port ${port}`);
   await startKafka();
 });

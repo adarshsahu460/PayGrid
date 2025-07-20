@@ -1,86 +1,124 @@
-# PayGrid: In-House Payment System Simulation
+# PayGrid: A Microservices-Based Payment Processing System
 
-This project simulates a realistic, highly scalable in-house payment system, modeling every key component of a modern card and digital payment network. It is designed for educational, prototyping, and architectural exploration purposes.
+PayGrid is a comprehensive, event-driven payment processing system built with a microservices architecture. It simulates the entire lifecycle of a credit card transaction, from the initial API request to the final settlement of funds. This project is designed to showcase a robust, scalable, and resilient system using modern technologies and best practices.
 
-## Architecture Overview
+## Architecture
 
-The system is composed of modular Node.js microservices, each representing a real-world payment infrastructure component:
+The system is composed of several independent microservices that communicate asynchronously using Apache Kafka. This decoupled approach ensures that the system is resilient to failures and can be scaled horizontally.
 
-- **API Gateway**: Entry point for all client requests, handles validation.
-- **Payment Service**: Orchestrates payment flows, enforces idempotency, and emits events.
-- **Card Network**: Simulates a Visa/Mastercard-like network, routes transactions, and enforces interchange rules.
-- **Issuing Bank**: Simulates the customer's bank, validates cards, and checks balances.
-- **Acquiring Bank**: Simulates the merchant's bank, handles settlements.
-- **Ledger Service**: Maintains a distributed ledger with double-entry records for all debits/credits, listens to payment, refund, and settlement events, and exposes health and metrics endpoints on port 3010.
+![Architecture Diagram](sd.png)
 
-## Technologies Used
+### Services
 
-- **Node.js/TypeScript** for all services
-- **Express.js** for REST APIs
-- **Kafka** (or compatible event bus) for event-driven architecture
-- **Postgres/MongoDB** for service databases (sharded/replicated)
-- **Redis** for caching, idempotency, and OTP/session storage
-- **Docker** for containerization
+*   **API Gateway (`api-gateway`):** The single entry point for all client requests. It is responsible for request validation, authentication, and routing to the appropriate downstream services.
+*   **Fraud Detection Service (`fraud-detection-service`):** Provides real-time fraud analysis based on transaction patterns and IP velocity.
+*   **Tokenization Service (`tokenization-service`):** Secures sensitive cardholder data by replacing it with a non-sensitive token.
+*   **Payment Service (`payment-service`):** The core orchestrator of the payment flow. It manages the state of each transaction and communicates with the banking network via Kafka.
+*   **Acquiring Bank Service (`acquiring-bank`):** Simulates the merchant's bank, responsible for receiving funds from the issuing bank.
+*   **Card Network Service (`card-network`):** Simulates a card network like Visa or Mastercard, responsible for routing transactions between the acquiring and issuing banks.
+*   **Issuing Bank Service (`issuing-bank`):** Simulates the customer's bank, responsible for authorizing or declining the transaction.
+*   **Ledger Service (`ledger-service`):** A double-entry bookkeeping system that provides an immutable, auditable record of all financial transactions. It also includes a settlement processor.
+*   **Notification Service (`notification-service`):** Responsible for sending notifications to customers and merchants (e.g., via webhooks or email).
 
-## Payment Flow
+### Key Technologies
 
-1. Client initiates payment via API Gateway.
-2. Payment Service checks idempotency and emits a PaymentInitiated event.
-3. Card Network routes to Issuing Bank for authorization.
-5. Issuing Bank approves/declines and responds back through the network.
-6. Payment Service updates status and emits events to Ledger and Wallet services.
-7. Settlement and reconciliation are handled asynchronously.
+*   **Node.js & TypeScript:** For building the microservices.
+*   **Docker & Docker Compose:** For containerizing and running the services in a local development environment.
+*   **Apache Kafka:** As the event-driven messaging backbone for asynchronous communication between services.
+*   **PostgreSQL:** As the primary data store for the Payment Service and Ledger Service.
+*   **Redis:** For caching and idempotency checks in the Payment Service.
+*   **Debezium:** For Change Data Capture (CDC) from the PostgreSQL database to Kafka.
+*   **Pino:** For structured, production-ready logging.
+*   **Opossum:** As a circuit breaker to improve the resilience of the system.
 
-## Goals
+## Getting Started
 
-- Faithfully model real-world payment system flows
-- Demonstrate event-driven, scalable, and fault-tolerant architecture
-- Enable extensibility for new payment methods and services
+### Prerequisites
 
----
+*   Docker
+*   Docker Compose
 
-See individual service directories for implementation details and API documentation. 
-![System Design](./sd.png)
+### Setup
 
-# PayGrid
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/adarshsahu460/PayGrid.git
+    cd PayGrid
+    ```
 
-## Overview
+2.  **Create `.env` files:**
+    Each service uses a `.env` file for configuration. You can create these by copying the `.env.example` files:
+    ```bash
+    cp services/api-gateway/.env.example services/api-gateway/.env
+    cp services/payment-service/.env.example services/payment-service/.env
+    # ... and so on for each service
+    ```
+    You will need to fill in the values in the `.env` files. For local development, you can use the default values from the `docker-compose.yml` file.
 
-PayGrid is a modular payment processing platform with microservices for payment, ledger, acquiring/issuing banks, card network, and API gateway.
+3.  **Build and run the services:**
+    ```bash
+    docker-compose up --build
+    ```
 
-## Services
+## API Usage
 
-- api-gateway
-- payment-service
-- ledger-service
-- acquiring-bank
-- issuing-bank
-- card-network
+You can interact with the API using `curl` or a tool like Postman.
 
-## Setup
+### 1. Get an Idempotency Key
 
-1. Copy `.env.example` to `.env` in each service and fill in values.
-2. Run `docker-compose up --build`.
+To prevent duplicate transactions, each payment request requires a unique idempotency key.
 
-## Endpoints
+```bash
+curl -X GET http://localhost:3000/idempotency-key
+```
 
-- `/health` - Health check for all services
-- `/payments` - Payment initiation (API Gateway)
-- ... (document other endpoints)
+**Response:**
+```json
+{
+  "idempotencyKey": "some-unique-key"
+}
+```
 
-## Environment Variables
+### 2. Initiate a Payment
 
-See `.env.example` in each service.
+Use the idempotency key from the previous step in the header of your payment request.
 
-## Development
+```bash
+curl -X POST http://localhost:3000/payments \
+-H "Content-Type: application/json" \
+-H "Idempotency-Key: some-unique-key" \
+-d '{
+  "merchantId": "merchant-123",
+  "amount": 100.00,
+  "currency": "USD",
+  "cardNumber": "4242424242424242",
+  "expiryMonth": 12,
+  "expiryYear": 2025,
+  "cvv": "123",
+  "description": "Test payment"
+}'
+```
 
-- Use `npm run dev` in each service for hot-reload.
-- Use ESLint and Prettier for code quality.
+**Response:**
+```json
+{
+  "transactionId": "txn_...",
+  "status": "PROCESSING",
+  "message": "Payment request received"
+}
+```
 
-## Graceful Shutdown
+### 3. Check Payment Status
 
-All services handle SIGTERM/SIGINT for clean shutdown.
+You can query the status of a payment using the `transactionId` returned in the previous step.
 
-## License
+```bash
+curl -X GET http://localhost:3001/payments/txn_.../status
+```
 
-MIT
+**Response:**
+```json
+{
+  "status": "AUTHORIZED",
+  "message": "Transaction authorized by issuing bank"
+}

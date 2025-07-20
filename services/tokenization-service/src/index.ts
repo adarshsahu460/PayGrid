@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import logger from './logger';
 dotenv.config();
 
 const app = express();
@@ -25,5 +26,5 @@ app.post('/detokenize', (req, res) => {
 
 const PORT = process.env.PORT || 3007;
 app.listen(PORT, () => {
-  console.log(`Tokenization Service listening on port ${PORT}`);
+  logger.info(`Tokenization Service listening on port ${PORT}`);
 });

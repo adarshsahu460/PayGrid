@@ -2,6 +2,7 @@ import express from 'express';
 import { Kafka } from 'kafkajs';
 import dotenv from 'dotenv';
 import opossum from 'opossum';
+import logger from './logger';
 
 dotenv.config();
 
@@ -26,9 +27,7 @@ app.get('/health', (_, res) => {
   res.json({ status: 'healthy' });
 });
 
-// Circuit breaker for external calls
 const processPayment = async (paymentRequest: any) => {
-  // Simulate acquiring bank processing
   const isApproved = Math.random() > 0.15; // 85% approval rate
   return {
     requestId: paymentRequest.requestId,
@@ -69,7 +68,7 @@ async function startKafka() {
         });
       } catch (err) {
         // Dead-letter: send failed message to dead-letter topic
-        console.error('[Acquiring Bank] Error processing payment, sending to dead-letter:', err);
+        logger.error({ err }, '[Acquiring Bank] Error processing payment, sending to dead-letter:');
         await producer.send({
           topic: 'payment-requests-dead-letter',
           messages: [
@@ -87,14 +86,14 @@ async function startKafka() {
       if (!message.value) return;
       try {
         const paymentRequest = JSON.parse(message.value.toString());
-        console.log('[Acquiring Bank] Retrying payment from dead-letter:', paymentRequest);
+        logger.info({ paymentRequest }, '[Acquiring Bank] Retrying payment from dead-letter:');
         // Re-process the payment (re-publish to main topic)
         await producer.send({
           topic: 'payment-requests',
           messages: [{ value: message.value.toString() }],
         });
       } catch (err) {
-        console.error('[Acquiring Bank] Error retrying payment from dead-letter:', err);
+        logger.error({ err }, '[Acquiring Bank] Error retrying payment from dead-letter:');
       }
     }
   });
@@ -133,6 +132,6 @@ startRefundConsumer().catch(console.error);
 
 // Start the service
 app.listen(port, async () => {
-  console.log(`Acquiring Bank Service listening on port ${port}`);
+  logger.info(`Acquiring Bank Service listening on port ${port}`);
   await startKafka();
 });
