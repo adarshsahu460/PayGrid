@@ -22,7 +22,7 @@ export const PaymentRequestSchema = z.object({
 
 // Payment Response Schema
 export const PaymentResponseSchema = z.object({
-  requestId: z.string(),
+  requestId: z.string().optional(), // Made optional
   transactionId: z.string(),
   status: z.enum(['APPROVED', 'DECLINED', 'PROCESSING', 'FAILED', 'AUTHORIZED', 'SETTLED']),
   message: z.string(),
@@ -101,29 +101,43 @@ async function recordDoubleEntry({ transactionId, debitAccount, creditAccount, a
   currency: string,
   eventType: string,
   eventData: any
-}) {
+}): Promise<number[]> {
   const client = await pool.connect();
+  const createdEntryIds: number[] = [];
   try {
     await client.query('BEGIN');
 
     // Idempotency checks remain, but now they are part of a transaction
     const debitExists = await ledgerEntryExists(transactionId, eventType, 'debit', debitAccount);
     if (!debitExists) {
-      await client.query(
-        'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      const result = await client.query(
+        'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
         [transactionId, 'debit', debitAccount, amount, currency, eventType, eventData]
       );
+      console.log(`[Ledger Debug] Created DEBIT ledger entry:`, {
+        transactionId, eventType, entryType: 'debit', account: debitAccount, amount, currency
+      });
+      if (result.rows[0]) {
+        createdEntryIds.push(result.rows[0].id);
+      }
     }
 
     const creditExists = await ledgerEntryExists(transactionId, eventType, 'credit', creditAccount);
     if (!creditExists) {
-      await client.query(
-        'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      const result = await client.query(
+        'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
         [transactionId, 'credit', creditAccount, amount, currency, eventType, eventData]
       );
+      console.log(`[Ledger Debug] Created CREDIT ledger entry:`, {
+        transactionId, eventType, entryType: 'credit', account: creditAccount, amount, currency
+      });
+      if (result.rows[0]) {
+        createdEntryIds.push(result.rows[0].id);
+      }
     }
 
     await client.query('COMMIT');
+    return createdEntryIds;
   } catch (error) {
     await client.query('ROLLBACK');
     logger.error({ err: error, transactionId, eventType }, 'Failed to record double entry, transaction rolled back.');
@@ -142,6 +156,8 @@ async function startKafka() {
   await consumer.subscribe({ topic: 'refund-requests', fromBeginning: true });
   await consumer.subscribe({ topic: 'refund-completed', fromBeginning: true });
   await consumer.subscribe({ topic: 'settlement-events', fromBeginning: true });
+  // Add subscription for the new topic that Payment Service will consume
+  await consumer.subscribe({ topic: 'payment-settlement-updates', fromBeginning: true });
   await consumer.run({
     eachMessage: async ({ topic, message }) => {
       if (!message.value) return;
@@ -162,6 +178,50 @@ async function startKafka() {
             eventData: event
           });
           logger.info({ transactionId: event.transactionId, eventType: 'payment-initiated' }, 'Processed payment-requests event');
+        } else if (topic === 'issuing-bank-responses') { // NEW BLOCK
+          // Ensure transactionId is present before parsing
+          if (!event.transactionId) {
+            logger.error({ event }, 'Received issuing-bank-responses with missing transactionId, sending to dead-letter:');
+            await producer.send({
+              topic: 'issuing-bank-responses-dead-letter',
+              messages: [{ value: message.value?.toString() || '' }]
+            });
+            return; // Skip processing this message
+          }
+
+          const parsed = PaymentResponseSchema.safeParse(event);
+          if (!parsed.success) {
+            logger.error({ err: parsed.error, event }, 'Invalid IssuingBankResponse event schema, sending to dead-letter:');
+            await producer.send({
+              topic: 'issuing-bank-responses-dead-letter',
+              messages: [{ value: message.value?.toString() || '' }]
+            });
+            return; // Skip processing this message
+          }
+
+          if (event.status === 'AUTHORIZED') {
+            // Record an unsettled entry for authorized payments
+            const createdEntryIds = await recordDoubleEntry({
+              transactionId: event.transactionId,
+              debitAccount: event.merchantId + '-pending', // Example account for pending funds
+              creditAccount: event.merchantId + '-revenue', // Example account for revenue
+              amount: event.amount, // Assuming amount is available in the response
+              currency: event.currency, // Assuming currency is available
+              eventType: 'payment-authorized',
+              eventData: event
+            });
+            // Ensure the entry is marked as unsettled (settled = FALSE)
+            if (createdEntryIds.length > 0) {
+              await pool.query(
+                `UPDATE ledger_entries SET settled = FALSE WHERE id = ANY($1::int[])`,
+                [createdEntryIds]
+              );
+              console.log(`[Ledger Debug] Created payment-authorized ledger entry with settled=FALSE for transactionId:`, event.transactionId);
+            } else {
+              console.log(`[Ledger Debug] No payment-authorized ledger entry created for transactionId:`, event.transactionId);
+            }
+            logger.info({ transactionId: event.transactionId, eventType: 'payment-authorized' }, 'Processed issuing-bank-responses event (AUTHORIZED)');
+          }
         } else if (topic === 'payment-responses') {
           const parsed = PaymentResponseSchema.safeParse(event);
           if (!parsed.success) throw new Error('Invalid PaymentResponse event');

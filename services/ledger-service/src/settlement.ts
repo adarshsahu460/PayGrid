@@ -37,13 +37,15 @@ export class SettlementProcessor {
         config.startTime || new Date(Date.now() - 24 * 60 * 60 * 1000), // Default to last 24 hours
         config.endTime || new Date()
       ]);
+      console.log(`[Settlement Debug] Unsettled ledger entries found for settlement:`, result.rows);
 
       // Mark all included entries as settled
-      await this.pool.query(
+      const updateResult = await this.pool.query(
         `UPDATE ledger_entries SET settled = TRUE, event_data = jsonb_set(event_data, '{settlementId}', '"${settlementId}"')
          WHERE currency = $1 AND created_at >= $2 AND created_at <= $3 AND settled = FALSE`,
         [config.currency, config.startTime || new Date(Date.now() - 24 * 60 * 60 * 1000), config.endTime || new Date()]
       );
+      console.log(`[Settlement Debug] Marked entries as settled:`, updateResult.rowCount);
 
       // Process each account's settlement
       for (const row of result.rows) {
@@ -92,6 +94,32 @@ export class SettlementProcessor {
             })
           }]
         });
+
+        // Find all payment-authorized entries that were just settled in this batch
+        const settledAuthorizedTxs = await this.pool.query(
+          `SELECT transaction_id FROM ledger_entries
+           WHERE event_type = 'payment-authorized'
+             AND settled = TRUE
+             AND currency = $1
+             AND created_at >= $2
+             AND created_at <= $3`,
+          [config.currency, config.startTime || new Date(Date.now() - 24 * 60 * 60 * 1000), config.endTime || new Date()]
+        );
+
+        for (const txRow of settledAuthorizedTxs.rows) {
+          await this.producer.send({
+            topic: 'payment-settlement-updates',
+            messages: [{
+              key: txRow.transaction_id,
+              value: JSON.stringify({
+                transactionId: txRow.transaction_id,
+                status: 'SETTLED',
+                settlementId: settlementId,
+                timestamp: new Date().toISOString()
+              })
+            }]
+          });
+        }
       }
 
       return {

@@ -36,7 +36,8 @@ async function startKafka() {
       if (!message.value) return;
       let acquiringResponse;
       try {
-        acquiringResponse = JSON.parse(message.value.toString());
+        acquiringResponse = JSON.parse(message.value.toString()); 
+        console.log("Response at the card-network :",acquiringResponse)
         await producer.send({
           topic: 'card-network-responses',
           messages: [
@@ -46,7 +47,8 @@ async function startKafka() {
                 ...acquiringResponse,
                 status: 'PROCESSED_BY_CARD_NETWORK',
                 message: 'Processed by card network',
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                requestId: acquiringResponse.requestId // Explicitly include requestId
               })
             }
           ]

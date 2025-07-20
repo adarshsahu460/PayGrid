@@ -70,8 +70,6 @@ services:
       - ./services/api-gateway/.env
     depends_on:
       - payment-service
-    environment:
-      # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 10s
@@ -90,8 +88,6 @@ services:
       - kafka
       - postgres
       - redis
-    environment:
-      # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
       interval: 10s
@@ -108,8 +104,6 @@ services:
       - ./services/card-network/.env
     depends_on:
       - kafka
-    environment:
-      # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
       interval: 10s
@@ -126,8 +120,6 @@ services:
       - ./services/issuing-bank/.env
     depends_on:
       - kafka
-    environment:
-      # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
       interval: 10s
@@ -144,8 +136,6 @@ services:
       - ./services/acquiring-bank/.env
     depends_on:
       - kafka
-    environment:
-      # Add other required env vars here
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
       interval: 10s
@@ -163,8 +153,6 @@ services:
     depends_on:
       - kafka
       - postgres
-    environment:
-      - PORT=3010
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3010/health"]
       interval: 10s
@@ -204,8 +192,6 @@ services:
       - ./services/notification-service/.env
     depends_on:
       - kafka
-    environment:
-      # Add other required env vars here
     restart: unless-stopped
     networks:
       - default
@@ -215,8 +201,6 @@ services:
       - "3007:3007"
     env_file:
       - ./services/tokenization-service/.env
-    environment:
-      # Add other required env vars here
     restart: unless-stopped
     networks:
       - default
@@ -228,8 +212,6 @@ services:
       - ./services/fraud-detection-service/.env
     depends_on:
       - kafka
-    environment:
-      # Add other required env vars here
     restart: unless-stopped
     networks:
       - default

@@ -21,18 +21,9 @@ const PaymentRequestSchema = z.object({
   transactionId: z.string().optional()
 });
 
-// Payment Response Schema
-const PaymentResponseSchema = z.object({
-  requestId: z.string(),
-  transactionId: z.string(),
-  status: z.enum(['APPROVED', 'DECLINED', 'PROCESSING', 'FAILED', 'AUTHORIZED', 'SETTLED']),
-  message: z.string(),
-  timestamp: z.string()
-});
 
 // Type definitions
 type BasePaymentRequest = z.infer<typeof PaymentRequestSchema>;
-type PaymentResponse = z.infer<typeof PaymentResponseSchema>;
 
 function generateTransactionId(): string {
   return `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -124,7 +115,7 @@ app.post('/payments', async (req, res) => {
 
     // Store payment request in Redis for idempotency (optional, for quick lookup)
     await redis.set(`payment:${transactionId}`, JSON.stringify(paymentRequest), { EX: 3600 });
-
+    console.log("transactionID is :", transactionId)
     // Send to Kafka for processing
     const kafkaProducerBreaker = new opossum(
       async () =>
@@ -135,7 +126,8 @@ app.post('/payments', async (req, res) => {
               key: transactionId,
               value: JSON.stringify({
                 ...paymentRequest,
-                transactionId
+                transactionId,
+                requestId: paymentRequest.requestId // Explicitly include requestId
               })
             }
           ]
@@ -174,21 +166,45 @@ async function startKafka() {
 
   // Listen for final payment status from issuing bank
   await consumer.subscribe({ topic: 'issuing-bank-responses', fromBeginning: true });
+  // NEW: Listen for settlement updates from Ledger Service
+  await consumer.subscribe({ topic: 'payment-settlement-updates', fromBeginning: true });
 
-  await consumer.run({ 
-    eachMessage: async ({ message }: { message: any }) => {
+  await consumer.run({
+    eachMessage: async ({ topic, message }: { topic: string, message: any }) => { // Add 'topic' to destructuring
       if (!message.value) return;
       try {
-        const response: PaymentResponse = JSON.parse(message.value.toString());
-        logger.info({ response }, 'Received payment response:');
+        const response: any = JSON.parse(message.value.toString()); // Use 'any' for now, or define a new schema
+        logger.info({ response, topic }, 'Received Kafka message:');
 
-        // Update payment status in database
-        await updatePaymentStatus(response.transactionId, response.status, response.message);
+        if (topic === 'issuing-bank-responses') {
+          // Existing logic for issuing-bank-responses
+          if (!response.transactionId) { // NEW: Check for missing transactionId
+            logger.error({ response }, 'Received issuing-bank-responses with missing transactionId, sending to dead-letter:');
+            await producer.send({
+              topic: 'issuing-bank-responses-dead-letter',
+              messages: [{ value: message.value?.toString() || '' }]
+            });
+            return; // Skip processing this message
+          }
+          await updatePaymentStatus(response.transactionId, response.status, response.message);
+        } else if (topic === 'payment-settlement-updates') { // NEW BLOCK
+          if (!response.transactionId) { // NEW: Check for missing transactionId
+            logger.error({ response }, 'Received payment-settlement-updates with missing transactionId, sending to dead-letter:');
+            await producer.send({
+              topic: 'payment-settlement-updates-dead-letter',
+              messages: [{ value: message.value?.toString() || '' }]
+            });
+            return; // Skip processing this message
+          }
+          if (response.status === 'SETTLED') {
+            await updatePaymentStatus(response.transactionId, 'SETTLED', 'Transaction settled by ledger service');
+          }
+        }
       } catch (err) {
         // Dead-letter: send failed message to dead-letter topic
-        logger.error({ err }, 'Error processing payment response, sending to dead-letter:');
+        logger.error({ err, topic }, 'Error processing Kafka response, sending to dead-letter:');
         await producer.send({
-          topic: 'issuing-bank-responses-dead-letter',
+          topic: `${topic}-dead-letter`, // Use dynamic dead-letter topic
           messages: [
             { value: message.value?.toString() || '' }
           ]
@@ -197,43 +213,51 @@ async function startKafka() {
     }
   });
 
-  // Retry consumer for dead-letter topic
-  const retryConsumer = kafka.consumer({ groupId: 'payment-service-retry-group' });
-  await retryConsumer.connect();
-  await retryConsumer.subscribe({ topic: 'issuing-bank-responses-dead-letter', fromBeginning: true });
-  await retryConsumer.run({
-    eachMessage: async ({ message }: { message: any }) => {
-      if (!message.value) return;
-      try {
-        const response = JSON.parse(message.value.toString());
-        logger.info({ response }, '[Payment Service] Retrying payment response from dead-letter:');
-        // Re-process the payment response (re-publish to main topic)
-        await producer.send({
-          topic: 'issuing-bank-responses',
-          messages: [{ value: message.value.toString() }],
-        });
-      } catch (err) {
-        logger.error({ err }, '[Payment Service] Error retrying payment response from dead-letter:');
-      }
-    }
-  });
+  // The retry consumer is disabled to prevent infinite loops with malformed messages.
+  // Dead-lettered messages should be handled with a more robust strategy, such as manual inspection or a delayed retry with an exponential backoff.
+  //
+  // // Retry consumer for dead-letter topic
+  // const retryConsumer = kafka.consumer({ groupId: 'payment-service-retry-group' });
+  // await retryConsumer.connect();
+  // await retryConsumer.subscribe({ topic: 'issuing-bank-responses-dead-letter', fromBeginning: true });
+  // await retryConsumer.run({
+  //   eachMessage: async ({ message }: { message: any }) => {
+  //     if (!message.value) return;
+  //     try {
+  //       const response = JSON.parse(message.value.toString());
+  //       logger.info({ response }, '[Payment Service] Retrying payment response from dead-letter:');
+  //       // Re-process the payment response (re-publish to main topic)
+  //       await producer.send({
+  //         topic: 'issuing-bank-responses',
+  //         messages: [{ value: message.value.toString() }],
+  //       });
+  //     } catch (err) {
+  //       logger.error({ err }, '[Payment Service] Error retrying payment response from dead-letter:');
+  //     }
+  //   }
+  // });
 }
 
 
 // Add payment status history tracking
 async function updatePaymentStatus(transactionId: string, newStatus: string, message: string, reason?: string) {
   // Get old status
+  console.log('--- Inside updatePaymentStatus ---');
+  console.log(`Received transactionId: ${transactionId} (Type: ${typeof transactionId})`);
+  console.log('------------------------------------');
   const result = await pool.query('SELECT status FROM payment_transactions WHERE transaction_id = $1', [transactionId]);
   const oldStatus = result.rows[0]?.status || null;
   await pool.query(
     'UPDATE payment_transactions SET status = $1, message = $2 WHERE transaction_id = $3',
     [newStatus, message, transactionId]
   );
+  if(!transactionId){
+    console.log("No transactionID");
+  }
   await pool.query(
     'INSERT INTO payment_status_history (transaction_id, old_status, new_status, reason) VALUES ($1, $2, $3, $4)',
     [transactionId, oldStatus, newStatus, reason || message]
   );
-  // In updatePaymentStatus, emit status change to Kafka for notification service
   await producer.send({
     topic: 'payment-status-changes',
     messages: [{ value: JSON.stringify({ transactionId, status: newStatus }) }]

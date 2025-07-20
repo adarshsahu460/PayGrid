@@ -41,12 +41,14 @@ async function startKafka() {
         // Simulate issuing bank processing
         const isApproved = Math.random() > 0.2; // 80% approval rate
         const response: any = {
-          requestId: cardNetworkResponse.requestId,
-          transactionId: cardNetworkResponse.transactionId || cardNetworkResponse.requestId,
+          ...cardNetworkResponse, // Forward all received fields
           status: isApproved ? 'AUTHORIZED' : 'DECLINED',
           message: isApproved ? 'Transaction authorized by issuing bank' : 'Transaction declined by issuing bank',
           timestamp: new Date().toISOString()
         };
+        // Log the response before sending to Kafka to debug missing requestId
+        logger.info({ response }, 'Issuing Bank response before sending to Kafka:');
+        console.log("Wrapped up the response for Kafka topics :",response)
         await producer.send({
           topic: 'issuing-bank-responses',
           messages: [

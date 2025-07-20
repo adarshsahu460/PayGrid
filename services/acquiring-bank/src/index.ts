@@ -50,6 +50,7 @@ async function startKafka() {
       let paymentRequest;
       try {
         paymentRequest = JSON.parse(message.value.toString());
+        console.log("Acquiring bank sending the paymentRequest : ",paymentRequest)
         await breaker.fire(paymentRequest);
         // Publish to next stage
         await producer.send({ 
@@ -61,7 +62,8 @@ async function startKafka() {
                 ...paymentRequest,
                 status: 'PROCESSED_BY_ACQUIRING',
                 message: 'Processed by acquiring bank',
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                requestId: paymentRequest.requestId // Explicitly include requestId
               })
             }
           ]
@@ -75,25 +77,6 @@ async function startKafka() {
             { value: message.value?.toString() || '' }
           ]
         });
-      }
-    }
-  });
-  const retryConsumer = kafka.consumer({ groupId: 'acquiring-bank-retry-group' });
-  await retryConsumer.connect();
-  await retryConsumer.subscribe({ topic: 'payment-requests-dead-letter', fromBeginning: true });
-  await retryConsumer.run({
-    eachMessage: async ({ message }) => {
-      if (!message.value) return;
-      try {
-        const paymentRequest = JSON.parse(message.value.toString());
-        logger.info({ paymentRequest }, '[Acquiring Bank] Retrying payment from dead-letter:');
-        // Re-process the payment (re-publish to main topic)
-        await producer.send({
-          topic: 'payment-requests',
-          messages: [{ value: message.value.toString() }],
-        });
-      } catch (err) {
-        logger.error({ err }, '[Acquiring Bank] Error retrying payment from dead-letter:');
       }
     }
   });
