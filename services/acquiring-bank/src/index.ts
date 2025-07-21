@@ -28,7 +28,7 @@ app.get('/health', (_, res) => {
 });
 
 const processPayment = async (paymentRequest: any) => {
-  const isApproved = Math.random() > 0.15; // 85% approval rate
+  const isApproved = Math.random() > 0.15; 
   return {
     requestId: paymentRequest.requestId,
     transactionId: paymentRequest.transactionId || paymentRequest.requestId,

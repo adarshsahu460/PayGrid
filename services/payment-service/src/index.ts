@@ -245,8 +245,6 @@ async function updatePaymentStatus(transactionId: string, newStatus: string, mes
   console.log('--- Inside updatePaymentStatus ---');
   console.log(`Received transactionId: ${transactionId} (Type: ${typeof transactionId})`);
   console.log('------------------------------------');
-  const result = await pool.query('SELECT status FROM payment_transactions WHERE transaction_id = $1', [transactionId]);
-  const oldStatus = result.rows[0]?.status || null;
   await pool.query(
     'UPDATE payment_transactions SET status = $1, message = $2 WHERE transaction_id = $3',
     [newStatus, message, transactionId]
@@ -254,17 +252,12 @@ async function updatePaymentStatus(transactionId: string, newStatus: string, mes
   if(!transactionId){
     console.log("No transactionID");
   }
-  await pool.query(
-    'INSERT INTO payment_status_history (transaction_id, old_status, new_status, reason) VALUES ($1, $2, $3, $4)',
-    [transactionId, oldStatus, newStatus, reason || message]
-  );
   await producer.send({
     topic: 'payment-status-changes',
     messages: [{ value: JSON.stringify({ transactionId, status: newStatus }) }]
   });
 }
 
-// Add endpoint to get payment status history
 app.get('/payments/:transactionId/history', async (req, res) => {
   const { transactionId } = req.params;
   const result = await pool.query('SELECT old_status, new_status, changed_at, reason FROM payment_status_history WHERE transaction_id = $1 ORDER BY changed_at ASC', [transactionId]);
