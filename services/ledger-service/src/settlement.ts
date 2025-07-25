@@ -17,9 +17,8 @@ export class SettlementProcessor {
   async processSettlement(config: SettlementConfig) {
     const settlementId = `SETTLEMENT-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
     try {
-      // Get all unsettled entries for the time period
       const query = `
-        SELECT 
+        SELECT
           account,
           currency,
           SUM(CASE WHEN entry_type = 'credit' THEN amount ELSE -amount END) as net_amount
@@ -49,37 +48,7 @@ export class SettlementProcessor {
 
       // Process each account's settlement
       for (const row of result.rows) {
-        if (row.net_amount > 0) {
-          // Credit settlement
-          await this.pool.query(
-            'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data, settled) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)',
-            [
-              settlementId,
-              'credit',
-              row.account,
-              row.net_amount,
-              row.currency,
-              'settlement',
-              { settlementType: config.settlementType, settlementId }
-            ]
-          );
-        } else {
-          // Debit settlement
-          await this.pool.query(
-            'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data, settled) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)',
-            [
-              settlementId,
-              'debit',
-              row.account,
-              Math.abs(row.net_amount),
-              row.currency,
-              'settlement',
-              { settlementType: config.settlementType, settlementId }
-            ]
-          );
-        }
-
-        // Emit settlement event
+        // Only emit settlement-events for actual settlement
         await this.producer.send({
           topic: 'settlement-events',
           messages: [{
@@ -94,32 +63,6 @@ export class SettlementProcessor {
             })
           }]
         });
-
-        // Find all payment-authorized entries that were just settled in this batch
-        const settledAuthorizedTxs = await this.pool.query(
-          `SELECT transaction_id FROM ledger_entries
-           WHERE event_type = 'payment-authorized'
-             AND settled = TRUE
-             AND currency = $1
-             AND created_at >= $2
-             AND created_at <= $3`,
-          [config.currency, config.startTime || new Date(Date.now() - 24 * 60 * 60 * 1000), config.endTime || new Date()]
-        );
-
-        for (const txRow of settledAuthorizedTxs.rows) {
-          await this.producer.send({
-            topic: 'payment-settlement-updates',
-            messages: [{
-              key: txRow.transaction_id,
-              value: JSON.stringify({
-                transactionId: txRow.transaction_id,
-                status: 'SETTLED',
-                settlementId: settlementId,
-                timestamp: new Date().toISOString()
-              })
-            }]
-          });
-        }
       }
 
       return {

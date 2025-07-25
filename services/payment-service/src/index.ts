@@ -18,30 +18,21 @@ const PaymentRequestSchema = z.object({
   cvv: z.string().length(3),
   description: z.string().optional(),
   metadata: z.record(z.string()).optional(),
-  transactionId: z.string().optional()
+  transactionId: z.string().optional(),
+  cardToken: z.string(),
+  clientId: z.string(),
+  userId: z.string(),
 });
-
-
-// Type definitions
-type BasePaymentRequest = z.infer<typeof PaymentRequestSchema>;
+type PaymentRequest = z.infer<typeof PaymentRequestSchema>;
 
 function generateTransactionId(): string {
   return `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-
-// Extend PaymentRequest to include cardToken and clientId
-interface PaymentRequest extends BasePaymentRequest {
-  cardToken: string;
-  clientId: string;
-}
-
 dotenv.config();
-
 const app = express();
 const port = process.env.PORT || 3001;
 
-// Database setup
 const pool = new Pool({
   user: process.env.POSTGRES_USER || 'paygrid',
   password: process.env.POSTGRES_PASSWORD || 'paygrid',
@@ -50,12 +41,10 @@ const pool = new Pool({
   database: process.env.POSTGRES_DB || 'paygrid'
 });
 
-// Redis setup
 const redis = createClient({
   url: `redis://${process.env.REDIS_HOST || 'redis'}:${process.env.REDIS_PORT || '6379'}`
 });
 
-// Kafka setup
 const kafka = new Kafka({
   clientId: 'payment-service',
   brokers: [process.env.KAFKA_BROKER || 'kafka:9092']
@@ -64,10 +53,7 @@ const kafka = new Kafka({
 const producer = kafka.producer();
 const consumer = kafka.consumer({ groupId: 'payment-service-group' });
 
-// Middleware
 app.use(express.json());
-
-// Health check
 app.get('/health', (_, res) => {
   return res.json({ status: 'healthy' });
 });
@@ -82,15 +68,6 @@ app.get('/payments/:transactionId/status', async (req, res) => {
   if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
   return res.json(result.rows[0]);
 });
- 
-// Add webhook registration
-const webhookMap: Map<string, string> = new Map();
-app.post('/webhooks/register', (req, res) => {
-  const { clientId, url } = req.body;
-  if (!clientId || !url) return res.status(400).json({ error: 'clientId and url required' });
-  webhookMap.set(clientId, url);
-  return res.json({ status: 'registered' });
-});
 
 // Payment initiation with idempotency and status tracking
 app.post('/payments', async (req, res) => {
@@ -98,24 +75,39 @@ app.post('/payments', async (req, res) => {
     const idempotencyKey = req.headers['idempotency-key'] || req.body.idempotencyKey;
     if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key is required' });
 
-    // Check Redis for idempotency
     const cached = await redis.get(`idempotency:${idempotencyKey}`);
     if (cached) {
-      return res.json(JSON.parse(cached));
+      const cachedObj = JSON.parse(cached);
+      if (cachedObj.state === 'PROCESSING') {
+        return res.status(202).json({ status: 'PROCESSING', message: 'Request is still being processed' });
+      } else if (cachedObj.state === 'COMPLETED') {
+        return res.json(cachedObj.response);
+      } else {
+        return res.status(409).json({ error: 'Idempotency key in unknown state' });
+      }
     }
 
+    await redis.set(`idempotency:${idempotencyKey}`,
+      JSON.stringify({ state: 'PROCESSING' }),
+      { EX: 86400 });
+
     const paymentRequest: PaymentRequest = req.body;
+    if (!paymentRequest.userId) {
+      return res.status(400).json({ error: 'userId is required in the request body' });
+    }
+    // Ensure cardNumber and requestId are present for schema validation
     const transactionId = generateTransactionId();
-
-    // Insert initial payment record with PENDING status
+    const outgoingPaymentRequest = {
+      ...paymentRequest,
+      transactionId,
+      requestId: paymentRequest.requestId || `req_${transactionId}`,
+      cardNumber: paymentRequest.cardNumber || '4111111111111111', // fallback test card
+      userId: paymentRequest.userId
+    };
     await pool.query(
-      'INSERT INTO payment_transactions (transaction_id, status, message, created_at) VALUES ($1, $2, $3, NOW())',
-      [transactionId, 'PENDING', 'Payment initiated']
+      'INSERT INTO payment_transactions (transaction_id, user_id, status, message, created_at) VALUES ($1, $2, $3, $4, NOW())',
+      [transactionId, paymentRequest.userId, 'PENDING', 'Payment initiated']
     );
-
-    // Store payment request in Redis for idempotency (optional, for quick lookup)
-    await redis.set(`payment:${transactionId}`, JSON.stringify(paymentRequest), { EX: 3600 });
-    console.log("transactionID is :", transactionId)
     // Send to Kafka for processing
     const kafkaProducerBreaker = new opossum(
       async () =>
@@ -124,11 +116,7 @@ app.post('/payments', async (req, res) => {
           messages: [
             {
               key: transactionId,
-              value: JSON.stringify({
-                ...paymentRequest,
-                transactionId,
-                requestId: paymentRequest.requestId // Explicitly include requestId
-              })
+              value: JSON.stringify(outgoingPaymentRequest)
             }
           ]
         }),
@@ -138,7 +126,6 @@ app.post('/payments', async (req, res) => {
         resetTimeout: 30000 // After 30 seconds, try again.
       }
     );
-
     await kafkaProducerBreaker.fire();
 
     const response = {
@@ -146,9 +133,7 @@ app.post('/payments', async (req, res) => {
       status: 'PROCESSING',
       message: 'Payment request received'
     };
-    // Store idempotency response in Redis (24h expiry)
-    await redis.set(`idempotency:${idempotencyKey}`, JSON.stringify(response), { EX: 86400 });
-    return res.json(response);
+    return res.status(202).json(response);
   } catch (error) {
     logger.error({ err: error }, 'Error processing payment:');
     return res.status(500).json({
@@ -158,53 +143,47 @@ app.post('/payments', async (req, res) => {
   }
 });
 
-// Kafka message handling with dead-letter topic
 async function startKafka() {
   await producer.connect();
   await consumer.connect();
   await redis.connect();
 
-  // Listen for final payment status from issuing bank
   await consumer.subscribe({ topic: 'issuing-bank-responses', fromBeginning: true });
-  // NEW: Listen for settlement updates from Ledger Service
   await consumer.subscribe({ topic: 'payment-settlement-updates', fromBeginning: true });
 
   await consumer.run({
-    eachMessage: async ({ topic, message }: { topic: string, message: any }) => { // Add 'topic' to destructuring
+    eachMessage: async ({ topic, message }: { topic: string, message: any }) => {
       if (!message.value) return;
       try {
-        const response: any = JSON.parse(message.value.toString()); // Use 'any' for now, or define a new schema
+        const response: any = JSON.parse(message.value.toString());
         logger.info({ response, topic }, 'Received Kafka message:');
-
         if (topic === 'issuing-bank-responses') {
-          // Existing logic for issuing-bank-responses
-          if (!response.transactionId) { // NEW: Check for missing transactionId
+          if (!response.transactionId) {
             logger.error({ response }, 'Received issuing-bank-responses with missing transactionId, sending to dead-letter:');
             await producer.send({
               topic: 'issuing-bank-responses-dead-letter',
               messages: [{ value: message.value?.toString() || '' }]
             });
-            return; // Skip processing this message
+            return;
           }
           await updatePaymentStatus(response.transactionId, response.status, response.message);
-        } else if (topic === 'payment-settlement-updates') { // NEW BLOCK
-          if (!response.transactionId) { // NEW: Check for missing transactionId
+        } else if (topic === 'payment-settlement-updates'){
+          if (!response.transactionId) {
             logger.error({ response }, 'Received payment-settlement-updates with missing transactionId, sending to dead-letter:');
             await producer.send({
               topic: 'payment-settlement-updates-dead-letter',
               messages: [{ value: message.value?.toString() || '' }]
             });
-            return; // Skip processing this message
+            return;
           }
           if (response.status === 'SETTLED') {
             await updatePaymentStatus(response.transactionId, 'SETTLED', 'Transaction settled by ledger service');
           }
         }
       } catch (err) {
-        // Dead-letter: send failed message to dead-letter topic
         logger.error({ err, topic }, 'Error processing Kafka response, sending to dead-letter:');
         await producer.send({
-          topic: `${topic}-dead-letter`, // Use dynamic dead-letter topic
+          topic: `${topic}-dead-letter`,
           messages: [
             { value: message.value?.toString() || '' }
           ]
@@ -212,45 +191,24 @@ async function startKafka() {
       }
     }
   });
-
-  // The retry consumer is disabled to prevent infinite loops with malformed messages.
-  // Dead-lettered messages should be handled with a more robust strategy, such as manual inspection or a delayed retry with an exponential backoff.
-  //
-  // // Retry consumer for dead-letter topic
-  // const retryConsumer = kafka.consumer({ groupId: 'payment-service-retry-group' });
-  // await retryConsumer.connect();
-  // await retryConsumer.subscribe({ topic: 'issuing-bank-responses-dead-letter', fromBeginning: true });
-  // await retryConsumer.run({
-  //   eachMessage: async ({ message }: { message: any }) => {
-  //     if (!message.value) return;
-  //     try {
-  //       const response = JSON.parse(message.value.toString());
-  //       logger.info({ response }, '[Payment Service] Retrying payment response from dead-letter:');
-  //       // Re-process the payment response (re-publish to main topic)
-  //       await producer.send({
-  //         topic: 'issuing-bank-responses',
-  //         messages: [{ value: message.value.toString() }],
-  //       });
-  //     } catch (err) {
-  //       logger.error({ err }, '[Payment Service] Error retrying payment response from dead-letter:');
-  //     }
-  //   }
-  // });
 }
 
 
-// Add payment status history tracking
 async function updatePaymentStatus(transactionId: string, newStatus: string, message: string, reason?: string) {
-  // Get old status
-  console.log('--- Inside updatePaymentStatus ---');
-  console.log(`Received transactionId: ${transactionId} (Type: ${typeof transactionId})`);
-  console.log('------------------------------------');
+  // Get previous status and user_id
+  const txRes = await pool.query('SELECT status, user_id FROM payment_transactions WHERE transaction_id = $1', [transactionId]);
+  const oldStatus = txRes.rows[0]?.status;
+  const userId = txRes.rows[0]?.user_id;
   await pool.query(
     'UPDATE payment_transactions SET status = $1, message = $2 WHERE transaction_id = $3',
     [newStatus, message, transactionId]
   );
-  if(!transactionId){
-    console.log("No transactionID");
+  // Insert into status history
+  if (userId) {
+    await pool.query(
+      'INSERT INTO payment_status_history (transaction_id, user_id, old_status, new_status, changed_at, reason) VALUES ($1, $2, $3, $4, NOW(), $5)',
+      [transactionId, userId, oldStatus, newStatus, reason || null]
+    );
   }
   await producer.send({
     topic: 'payment-status-changes',
@@ -269,9 +227,10 @@ const refundProducer = producer;
 const refundConsumer = kafka.consumer({ groupId: 'payment-service-refund-group' });
 
 // Emit refund event
-async function emitRefundEvent(transactionId: string, amount: number, reason: string) {
+async function emitRefundEvent(transactionId: string, amount: number, reason: string, userId?: string) {
   const event = {
     transactionId,
+    userId,
     amount,
     reason,
     timestamp: new Date().toISOString(),
@@ -301,29 +260,114 @@ async function startRefundConsumer() {
 
 startRefundConsumer().catch(console.error);
 
-// In compensation logic, trigger refund if payment was SETTLED or AUTHORIZED before FAILED
 setInterval(async () => {
   const stuck = await pool.query("SELECT transaction_id, status FROM payment_transactions WHERE status = 'FAILED' AND created_at < NOW() - INTERVAL '1 minute'");
   for (const row of stuck.rows) {
-    // Check history for SETTLED or AUTHORIZED before FAILED
     const hist = await pool.query("SELECT old_status FROM payment_status_history WHERE transaction_id = $1 AND new_status = 'FAILED' ORDER BY changed_at DESC LIMIT 1", [row.transaction_id]);
-    const prev = hist.rows[0]?.old_status;``
+    const prev = hist.rows[0]?.old_status;
     if (prev === 'SETTLED' || prev === 'AUTHORIZED') {  
-      // Avoid duplicate refunds
       const refundHist = await pool.query("SELECT 1 FROM payment_status_history WHERE transaction_id = $1 AND new_status = 'REFUND_PENDING'", [row.transaction_id]);
       if (refundHist.rows.length === 0) {
         await updatePaymentStatus(row.transaction_id, 'REFUND_PENDING', 'Automatic refund initiated');
-        // Assume amount is available in payment_transactions (add column if needed)
         const amtRes = await pool.query('SELECT amount FROM payment_transactions WHERE transaction_id = $1', [row.transaction_id]);
         const amount = amtRes.rows[0]?.amount || 0;
-        await emitRefundEvent(row.transaction_id, amount, 'Automatic compensation for failed payment');
+        // Fetch userId for the transaction
+        const userRes = await pool.query('SELECT user_id FROM payment_transactions WHERE transaction_id = $1', [row.transaction_id]);
+        const userId = userRes.rows[0]?.user_id;
+        await emitRefundEvent(row.transaction_id, amount, 'Automatic compensation for failed payment', userId);
       }
     }
   }
 }, 60000);
 
-// Start the service
+
+// --- Dead-letter consumers ---
+async function startDeadLetterConsumers() {
+  const deadLetterConsumer = kafka.consumer({ groupId: 'payment-service-dead-letter-group' });
+  await deadLetterConsumer.connect();
+  // List of known dead-letter topics
+  const dlTopics = [
+    'issuing-bank-responses-dead-letter',
+    'payment-settlement-updates-dead-letter',
+    // Add more if needed
+  ];
+  for (const topic of dlTopics) {
+    await deadLetterConsumer.subscribe({ topic, fromBeginning: true });
+  }
+  await deadLetterConsumer.run({
+    eachMessage: async ({ topic, message }) => {
+      if (!message.value) return;
+      let parsed;
+      try {
+        parsed = JSON.parse(message.value.toString());
+      } catch {
+        logger.error({ topic, value: message.value.toString() }, '[DLQ] Could not parse message');
+        return;
+      }
+      // Try to get timestamp from message, fallback to Kafka timestamp
+      let msgTimestamp = parsed.timestamp ? new Date(parsed.timestamp) : (message.timestamp ? new Date(Number(message.timestamp)) : new Date());
+      const now = new Date();
+      if (now.getTime() - msgTimestamp.getTime() > 60 * 1000) {
+        logger.warn({ topic, value: parsed }, '[DLQ] Dropping message older than 1 minute');
+        // Publish to dlq-failures topic for payment-service to mark as FAILED
+        let transactionId = parsed.transactionId || (parsed.payload && parsed.payload.transactionId);
+        await producer.send({
+          topic: 'dlq-failures',
+          messages: [{
+            value: JSON.stringify({
+              transactionId,
+              originalTopic: topic,
+              droppedAt: now.toISOString(),
+              reason: 'Dead-letter message dropped after 1 minute',
+              payload: parsed
+            })
+          }]
+        });
+        return;
+      }
+      // Retry: publish to original topic
+      let originalTopic = topic.replace('-dead-letter', '');
+      logger.info({ topic, originalTopic, value: parsed }, '[DLQ] Retrying message');
+      await producer.send({
+        topic: originalTopic,
+        messages: [{ value: message.value.toString() }]
+      });
+    }
+  });
+}
+
+async function startDLQFailureConsumer() {
+  const dlqFailureConsumer = kafka.consumer({ groupId: 'payment-service-dlq-failure-group' });
+  await dlqFailureConsumer.connect();
+  await dlqFailureConsumer.subscribe({ topic: 'dlq-failures', fromBeginning: true });
+  await dlqFailureConsumer.run({
+    eachMessage: async ({ message }) => {
+      if (!message.value) return;
+      let parsed;
+      try {
+        parsed = JSON.parse(message.value.toString());
+      } catch {
+        logger.error({ value: message.value.toString() }, '[DLQ-FAILURE] Could not parse message');
+        return;
+      }
+      const transactionId = parsed.transactionId;
+      if (!transactionId) {
+        logger.error({ parsed }, '[DLQ-FAILURE] No transactionId found in message');
+        return;
+      }
+      // Update payment_transactions to FAILED
+      await pool.query(
+        'UPDATE payment_transactions SET status = $1, message = $2 WHERE transaction_id = $3',
+        ['FAILED', `[DLQ-FAILURE] ${parsed.reason || 'Message dropped from DLQ'}`, transactionId]
+      );
+      logger.info({ transactionId }, '[DLQ-FAILURE] Marked payment as FAILED');
+    }
+  });
+}
+
 app.listen(port, async () => {
   logger.info(`Payment Service listening on port ${port}`);
   await startKafka();
+  await startDeadLetterConsumers();
+  await startDLQFailureConsumer();
 });

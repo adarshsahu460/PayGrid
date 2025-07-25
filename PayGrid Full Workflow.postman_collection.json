@@ -8,91 +8,6 @@
 	},
 	"item": [
 		{
-			"name": "Get Idempotency Key",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"const data = pm.response.json();",
-							"pm.collectionVariables.set('idempotencyKey', data.idempotencyKey);"
-						],
-						"type": "text/javascript"
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "http://localhost:3000/idempotency-key",
-					"protocol": "http",
-					"host": [
-						"localhost"
-					],
-					"port": "3000",
-					"path": [
-						"idempotency-key"
-					]
-				}
-			},
-			"response": [
-				{
-					"name": "1",
-					"originalRequest": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "http://localhost:3000/idempotency-key",
-							"protocol": "http",
-							"host": [
-								"localhost"
-							],
-							"port": "3000",
-							"path": [
-								"idempotency-key"
-							]
-						}
-					},
-					"status": "OK",
-					"code": 200,
-					"_postman_previewlanguage": "json",
-					"header": [
-						{
-							"key": "X-Powered-By",
-							"value": "Express"
-						},
-						{
-							"key": "Content-Type",
-							"value": "application/json; charset=utf-8"
-						},
-						{
-							"key": "Content-Length",
-							"value": "57"
-						},
-						{
-							"key": "ETag",
-							"value": "W/\"39-FtGRS2j9rsinzdzd4xiffN7LJq4\""
-						},
-						{
-							"key": "Date",
-							"value": "Sun, 20 Jul 2025 04:31:53 GMT"
-						},
-						{
-							"key": "Connection",
-							"value": "keep-alive"
-						},
-						{
-							"key": "Keep-Alive",
-							"value": "timeout=5"
-						}
-					],
-					"cookie": [],
-					"body": "{\n    \"idempotencyKey\": \"5e15feb3-07dd-4b00-b8d9-76d9043f6a75\"\n}"
-				}
-			]
-		},
-		{
 			"name": "Initiate Payment",
 			"event": [
 				{
@@ -116,12 +31,12 @@
 					},
 					{
 						"key": "Idempotency-Key",
-						"value": "5e15feb3-07dd-4b00-b8d9-76d9043f6a75"
+						"value": "ed6tbefa-1d0c-4f1c-802a-8c14abbe3dce"
 					}
 				],
 				"body": {
 					"mode": "raw",
-					"raw": "{\n  \"merchantId\": \"merchant-123\",\n  \"amount\": 100.00,\n  \"currency\": \"USD\",\n  \"cardNumber\": \"4242424242424242\",\n  \"expiryMonth\": 12,\n  \"expiryYear\": 2025,\n  \"cvv\": \"123\",\n  \"description\": \"Test payment\"\n}"
+					"raw": "{\n  \"merchantId\": \"merchant-123\",\n  \"userId\" : \"user-123\",\n  \"amount\": 100.00,\n  \"currency\": \"USD\",\n  \"cardNumber\": \"4242424242424333\",\n  \"expiryMonth\": 12,\n  \"expiryYear\": 2025,\n  \"cvv\": \"123\",\n  \"description\": \"Test payment\"\n}"
 				},
 				"url": {
 					"raw": "http://localhost:3000/payments",
@@ -210,7 +125,7 @@
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "http://localhost:3001/payments/txn_1753002862526_6xwv4qzdi/status",
+					"raw": "http://localhost:3001/payments/txn_1753406309894_zan65ziy0/status",
 					"protocol": "http",
 					"host": [
 						"localhost"
@@ -218,7 +133,7 @@
 					"port": "3001",
 					"path": [
 						"payments",
-						"txn_1753002862526_6xwv4qzdi",
+						"txn_1753406309894_zan65ziy0",
 						"status"
 					]
 				}
@@ -287,7 +202,7 @@
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "http://localhost:3001/payments/txn_1752986033120_0pp3cxa0c/history",
+					"raw": "http://localhost:3001/payments/txn_1753274280498_1v13u07z4/history",
 					"protocol": "http",
 					"host": [
 						"localhost"
@@ -295,7 +210,7 @@
 					"port": "3001",
 					"path": [
 						"payments",
-						"txn_1752986033120_0pp3cxa0c",
+						"txn_1753274280498_1v13u07z4",
 						"history"
 					]
 				}
@@ -371,7 +286,7 @@
 				],
 				"body": {
 					"mode": "raw",
-					"raw": "{\r\n  \"settlementType\": \"manual\",\r\n  \"currency\": \"USD\",\r\n  \"endTime\": \"2025-07-20T23:59:59Z\"\r\n}\r\n",
+					"raw": "{\r\n  \"settlementType\": \"manual\",\r\n  \"currency\": \"USD\"\r\n}\r\n",
 					"options": {
 						"raw": {
 							"language": "json"

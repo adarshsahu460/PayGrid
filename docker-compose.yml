@@ -23,8 +23,7 @@ services:
   kafka-init-topics:
     image: bitnami/kafka:3.4
     depends_on:
-      - kafka:
-        condition: service_healthy
+      - kafka
     entrypoint: ["/bin/sh", "-c"]
     command: >
       "sleep 10 && \
@@ -70,8 +69,7 @@ services:
     env_file:
       - ./services/api-gateway/.env
     depends_on:
-      - payment-service :
-          condition: service_healthy
+      - payment-service
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 10s
@@ -87,12 +85,9 @@ services:
     env_file:
       - ./services/payment-service/.env
     depends_on:
-      - kafka :
-        condition: service_healthy
-      - postgres :
-        condition: service_healthy
-      - redis : 
-        condition: service_healthy
+      - kafka
+      - postgres
+      - redis 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
       interval: 10s
@@ -108,8 +103,7 @@ services:
     env_file:
       - ./services/card-network/.env
     depends_on:
-      - kafka : 
-        condition: service_healthy
+      - kafka 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
       interval: 10s
@@ -125,8 +119,7 @@ services:
     env_file:
       - ./services/issuing-bank/.env
     depends_on:
-      - kafka : 
-        condition: service_healthy
+      - kafka 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
       interval: 10s
@@ -142,8 +135,7 @@ services:
     env_file:
       - ./services/acquiring-bank/.env
     depends_on:
-      - kafka : 
-        condition: service_healthy
+      - kafka 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
       interval: 10s
@@ -159,10 +151,8 @@ services:
     env_file:
       - ./services/ledger-service/.env
     depends_on:
-      - kafka : 
-        condition: service_healthy
-      - postgres : 
-        condition: service_healthy
+      - kafka 
+      - postgres
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3010/health"]
       interval: 10s
@@ -174,10 +164,8 @@ services:
   debezium:
     image: debezium/connect:2.4
     depends_on:
-      - kafka : 
-        condition: service_healthy
-      - postgres : 
-        condition: service_healthy
+      - kafka
+      - postgres
     environment:
       - BOOTSTRAP_SERVERS=kafka:9092
       - GROUP_ID=debezium
@@ -193,18 +181,6 @@ services:
       - PLUGIN_NAME=pgoutput
     ports:
       - "8083:8083"
-    restart: unless-stopped
-    networks:
-      - default
-  notification-service:
-    build: ./services/notification-service
-    ports:
-      - "3006:3006"
-    env_file:
-      - ./services/notification-service/.env
-    depends_on:
-      - kafka : 
-        condition: service_healthy
     restart: unless-stopped
     networks:
       - default
@@ -224,8 +200,7 @@ services:
     env_file:
       - ./services/fraud-detection-service/.env
     depends_on:
-      - kafka : 
-        condition: service_healthy
+      - kafka 
     restart: unless-stopped
     networks:
       - default
@@ -234,10 +209,8 @@ services:
     env_file:
       - ./services/history-service/.env
     depends_on:
-      - kafka:
-          condition: service_healthy
-      - postgres:
-          condition: service_healthy
+      - kafka
+      - postgres
     restart: unless-stopped
     networks:
       - default

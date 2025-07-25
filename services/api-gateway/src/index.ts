@@ -1,6 +1,5 @@
 import express from 'express';
 import dotenv from 'dotenv';
-import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import logger from './logger';
 dotenv.config();
@@ -16,12 +15,6 @@ app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-app.get('/idempotency-key', (_req, res) => {
-  const key = uuidv4();
-  res.status(200).json({ idempotencyKey: key });
-});
-
-// Placeholder for payment initiation route
 app.post('/payments', async (req, res) => {
   const idempotencyKey = req.headers['idempotency-key'] || req.body.idempotencyKey;
   if (!idempotencyKey) {
@@ -45,7 +38,6 @@ app.post('/payments', async (req, res) => {
     if (!tokenResp.data.token) {
       return sendError(res, 500, 'Tokenization failed');
     }
-    // Replace cardNumber with token
     const paymentBody = { ...req.body, cardToken: tokenResp.data.token };
     delete paymentBody.cardNumber;
 
@@ -74,6 +66,7 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
+
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down...');
   server.close(() => {

@@ -17,16 +17,18 @@ export const PaymentRequestSchema = z.object({
   cvv: z.string().length(3),
   description: z.string().optional(),
   metadata: z.record(z.string()).optional(),
-  transactionId: z.string().optional()
+  transactionId: z.string().optional(),
+  userId: z.string(),
 });
 
 // Payment Response Schema
 export const PaymentResponseSchema = z.object({
-  requestId: z.string().optional(), // Made optional
+  requestId: z.string().optional(),
   transactionId: z.string(),
   status: z.enum(['APPROVED', 'DECLINED', 'PROCESSING', 'FAILED', 'AUTHORIZED', 'SETTLED']),
   message: z.string(),
-  timestamp: z.string()
+  timestamp: z.string(),
+  userId: z.string(),
 });
 
 // Type definitions
@@ -71,18 +73,20 @@ app.get('/health', (_req, res) => {
 });
 
 async function ensureLedgerTable() {
-  await pool.query(`CREATE TABLE IF NOT EXISTS ledger_entries (
-    id SERIAL PRIMARY KEY,
-    transaction_id VARCHAR(64),
-    entry_type VARCHAR(16), -- debit/credit
-    account VARCHAR(64),
-    amount NUMERIC(18,2),
-    currency VARCHAR(3),
-    event_type VARCHAR(32),
-    event_data JSONB,
-    created_at TIMESTAMP DEFAULT NOW(),
-    settled BOOLEAN DEFAULT FALSE
-  )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ledger_entries (
+      id SERIAL PRIMARY KEY,
+      transaction_id VARCHAR(64),
+      entry_type VARCHAR(16),
+      account VARCHAR(64),
+      amount NUMERIC(18,2),
+      currency VARCHAR(3),
+      event_type VARCHAR(32),
+      event_data JSONB,
+      created_at TIMESTAMP DEFAULT NOW(),
+      settled BOOLEAN DEFAULT FALSE
+      )`
+   );
 }
 
 async function ledgerEntryExists(transactionId: string, eventType: string, entryType: string, account: string) {
@@ -107,7 +111,6 @@ async function recordDoubleEntry({ transactionId, debitAccount, creditAccount, a
   try {
     await client.query('BEGIN');
 
-    // Idempotency checks remain, but now they are part of a transaction
     const debitExists = await ledgerEntryExists(transactionId, eventType, 'debit', debitAccount);
     if (!debitExists) {
       const result = await client.query(
@@ -150,36 +153,28 @@ async function recordDoubleEntry({ transactionId, debitAccount, creditAccount, a
 async function startKafka() {
   await consumer.connect();
   await consumer.subscribe({ topic: 'payment-requests', fromBeginning: true });
-  await consumer.subscribe({ topic: 'acquiring-bank-responses', fromBeginning: true });
-  await consumer.subscribe({ topic: 'card-network-responses', fromBeginning: true });
   await consumer.subscribe({ topic: 'issuing-bank-responses', fromBeginning: true });
-  await consumer.subscribe({ topic: 'refund-requests', fromBeginning: true });
-  await consumer.subscribe({ topic: 'refund-completed', fromBeginning: true });
   await consumer.subscribe({ topic: 'settlement-events', fromBeginning: true });
-  // Add subscription for the new topic that Payment Service will consume
-  await consumer.subscribe({ topic: 'payment-settlement-updates', fromBeginning: true });
   await consumer.run({
     eachMessage: async ({ topic, message }) => {
       if (!message.value) return;
       const eventPayload = message.value.toString();
       try {
         const event = JSON.parse(eventPayload);
-        // ... existing logic for each topic
         if (topic === 'payment-requests') {
           const parsed = PaymentRequestSchema.safeParse(event);
           if (!parsed.success) throw new Error('Invalid PaymentRequest event');
           await recordDoubleEntry({
             transactionId: event.transactionId,
-            debitAccount: event.userId || event.cardNumber,
-            creditAccount: event.merchantId,
+            debitAccount: event.userId,
+            creditAccount: event.merchantId + '-payable', 
             amount: event.amount,
             currency: event.currency,
             eventType: 'payment-initiated',
             eventData: event
           });
           logger.info({ transactionId: event.transactionId, eventType: 'payment-initiated' }, 'Processed payment-requests event');
-        } else if (topic === 'issuing-bank-responses') { // NEW BLOCK
-          // Ensure transactionId is present before parsing
+        } else if (topic === 'issuing-bank-responses') {
           if (!event.transactionId) {
             logger.error({ event }, 'Received issuing-bank-responses with missing transactionId, sending to dead-letter:');
             await producer.send({
@@ -190,7 +185,7 @@ async function startKafka() {
           }
 
           const parsed = PaymentResponseSchema.safeParse(event);
-          if (!parsed.success) {
+          if (!parsed.success){
             logger.error({ err: parsed.error, event }, 'Invalid IssuingBankResponse event schema, sending to dead-letter:');
             await producer.send({
               topic: 'issuing-bank-responses-dead-letter',
@@ -200,83 +195,20 @@ async function startKafka() {
           }
 
           if (event.status === 'AUTHORIZED') {
-            // Record an unsettled entry for authorized payments
-            const createdEntryIds = await recordDoubleEntry({
-              transactionId: event.transactionId,
-              debitAccount: event.merchantId + '-pending', // Example account for pending funds
-              creditAccount: event.merchantId + '-revenue', // Example account for revenue
-              amount: event.amount, // Assuming amount is available in the response
-              currency: event.currency, // Assuming currency is available
-              eventType: 'payment-authorized',
-              eventData: event
-            });
-            // Ensure the entry is marked as unsettled (settled = FALSE)
-            if (createdEntryIds.length > 0) {
-              await pool.query(
-                `UPDATE ledger_entries SET settled = FALSE WHERE id = ANY($1::int[])`,
-                [createdEntryIds]
-              );
-              console.log(`[Ledger Debug] Created payment-authorized ledger entry with settled=FALSE for transactionId:`, event.transactionId);
-            } else {
-              console.log(`[Ledger Debug] No payment-authorized ledger entry created for transactionId:`, event.transactionId);
-            }
             logger.info({ transactionId: event.transactionId, eventType: 'payment-authorized' }, 'Processed issuing-bank-responses event (AUTHORIZED)');
           }
-        } else if (topic === 'payment-responses') {
-          const parsed = PaymentResponseSchema.safeParse(event);
-          if (!parsed.success) throw new Error('Invalid PaymentResponse event');
-          if (event.status === 'SETTLED') {
-            await recordDoubleEntry({
-              transactionId: event.transactionId,
-              debitAccount: event.merchantId + '-reserve',
-              creditAccount: event.merchantId,
-              amount: event.amount,
-              currency: event.currency,
-              eventType: 'payment-settled',
-              eventData: event
-            });
-            logger.info({ transactionId: event.transactionId, eventType: 'payment-settled' }, 'Processed payment-responses event');
-          }
-        } else if (topic === 'refund-requests') {
-          if (!event.transactionId || !event.amount || !event.timestamp) throw new Error('Invalid RefundInitiatedEvent');
+        } else if (topic === 'settlement-events') {
+          // Record settlement event in ledger: Debit merchant-payable, Credit merchant-settled
           await recordDoubleEntry({
-            transactionId: event.transactionId,
-            debitAccount: event.merchantId,
-            creditAccount: event.userId + '-reserve',
-            amount: event.amount,
+            transactionId: event.settlementId,
+            debitAccount: event.account + '-payable',
+            creditAccount: event.account + '-settled',
+            amount: Math.abs(event.amount),
             currency: event.currency,
-            eventType: 'refund-initiated',
+            eventType: 'settlement',
             eventData: event
           });
-          logger.info({ transactionId: event.transactionId, eventType: 'refund-initiated' }, 'Processed refund-requests event');
-        } else if (topic === 'refund-completed') {
-          if (!event.transactionId || !event.amount || !event.status) throw new Error('Invalid RefundCompletedEvent');
-          if (event.status === 'REFUNDED') {
-            await recordDoubleEntry({
-              transactionId: event.transactionId,
-              debitAccount: event.userId + '-reserve',
-              creditAccount: event.userId,
-              amount: event.amount,
-              currency: event.currency,
-              eventType: 'refund-completed',
-              eventData: event
-            });
-            logger.info({ transactionId: event.transactionId, eventType: 'refund-completed' }, 'Processed refund-completed event');
-          }
-        } else if (topic === 'settlement-events') {
-          // Record settlement event in ledger
-          await pool.query(
-            'INSERT INTO ledger_entries (transaction_id, entry_type, account, amount, currency, event_type, event_data, settled) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)',
-            [
-              event.settlementId,
-              event.amount > 0 ? 'credit' : 'debit',
-              event.account,
-              Math.abs(event.amount),
-              event.currency,
-              'settlement',
-              event,
-            ]
-          );
+          logger.info({ settlementId: event.settlementId, account: event.account }, 'Processed settlement-events');
         }
       } catch (err) {
         const error = err as Error;
